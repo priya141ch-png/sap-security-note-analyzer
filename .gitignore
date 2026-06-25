@@ -1,0 +1,48 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── User data — NEVER commit (contains encrypted credentials & private data) ──
+user_data/
+runs/
+logs/
+outputs/
+uploads/
+_tmp_landscape/
+*.sap-backup
+URLS.txt
+
+# ── Secrets & keys ────────────────────────────────────────────────────────────
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# ── Relay runtime logs ────────────────────────────────────────────────────────
+relay/relay_client.log
+relay/*.log
+dev_rfc.log
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── OS / IDE ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp

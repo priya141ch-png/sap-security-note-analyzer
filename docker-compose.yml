@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  sap-analyzer:
+    build: .
+    container_name: sap-analyzer
+    restart: always
+    ports:
+      - "8501:8501"
+      - "8502:8502"
+    volumes:
+      - ./user_data:/app/user_data
+      - ./logs:/app/logs
+      - ./runs:/app/runs
+    environment:
+      - APP_ENV=production
+      - AUTH_ENABLED=false
