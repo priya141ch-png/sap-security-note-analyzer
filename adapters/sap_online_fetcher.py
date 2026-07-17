@@ -177,17 +177,37 @@ def fetch_note_pdf(note_number: str, s_user: str, s_password: str) -> Tuple[Opti
             return r.content, ""
 
         body_text = r.text[:500] if r.text else ""
-        if "Service Unavailable" in body_text or "temporarily down" in body_text:
-            return None, (
-                "SAP Support Portal PDF service is temporarily unavailable (maintenance). "
-                "The SAML login succeeded — please try again in a few minutes."
-            )
+        portal_down = ("Service Unavailable" in body_text or "temporarily down" in body_text
+                       or r.status_code == 503)
         ct = r.headers.get("Content-Type", "")
-        return None, (
-            f"Authentication completed but PDF not returned (Content-Type: {ct}). "
-            f"Final URL: {r.url}. "
-            "Your S-user may not have download permissions for this note."
-        )
+        not_pdf = not _is_pdf(r)
+        if portal_down or not_pdf:
+            # Launchpad PDF service unavailable or returned non-PDF — try me.sap.com via browser
+            reason = ("SAP launchpad PDF service unavailable (503)" if portal_down
+                      else f"Launchpad returned non-PDF (CT={ct}, url={r.url})")
+            logger.info("%s — falling back to me.sap.com Playwright download", reason)
+            try:
+                from adapters.sap_me_fetcher import fetch_note_pdf_me
+                pdf_bytes, me_err = fetch_note_pdf_me(note_number, s_user, s_password)
+                if pdf_bytes:
+                    logger.info("me.sap.com fallback succeeded for note %s", note_number)
+                    return pdf_bytes, ""
+                logger.warning("me.sap.com fallback failed: %s", me_err)
+            except Exception as fb_exc:
+                logger.warning("me.sap.com fallback error: %s", fb_exc)
+                me_err = str(fb_exc)
+            if portal_down:
+                return None, (
+                    "SAP Support Portal PDF service is temporarily unavailable (maintenance). "
+                    "Automatic browser fallback also failed: " + me_err + "
+"
+                    "Please try again in a few minutes, or use the Upload note file option."
+                )
+            return None, (
+                f"Authentication completed but PDF not returned (Content-Type: {ct}). "
+                f"Final URL: {r.url}. "
+                "Browser-based fallback also failed: " + me_err
+            )
 
     except Exception as exc:
         logger.exception("SAP fetch error")
