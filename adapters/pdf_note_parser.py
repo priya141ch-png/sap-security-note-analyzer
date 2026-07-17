@@ -153,12 +153,22 @@ def _extract_components(text: str, warnings: list) -> List[str]:
 
 
 def _parse_software_components_table(text: str, warnings: list) -> List[NoteApplicabilityMatrixEntry]:
-    """Extract applicability matrix from 'Software Components' section in PDF text."""
+    """Extract applicability matrix from Software Components section.
+
+    Handles all common SAP note PDF formats:
+      SAP_BASIS  752   0000  0025   (zero-padded SP numbers)
+      SAP_BASIS  752   SP00  SP25   (SP-prefixed)
+      BC-UPG-NA  752   0     15     (hyphenated component, short SP)
+      SAP_BASIS  7.52  SP00  SP25   (dot-separated release)
+    """
     entries: List[NoteApplicabilityMatrixEntry] = []
 
-    # Find the Software Components block
+    # Locate the Software Components block; stop at the next major section
     m = re.search(
-        r"Software Components?\s*\n([\s\S]{0,3000}?)(?=\n[A-Z][^\n]{0,60}\n|\Z)",
+        r"Software Components?[^\n]{0,80}\n"
+        r"([\s\S]{0,4000}?)"
+        r"(?=\n(?:Correction Instructions?|Prerequisites?|Support Package|"
+        r"Available Language|Manual Activities|Note Assistant)|\Z)",
         text,
         re.IGNORECASE,
     )
@@ -167,16 +177,39 @@ def _parse_software_components_table(text: str, warnings: list) -> List[NoteAppl
         return entries
 
     block = m.group(1)
-    # Each row: <ComponentName>  <Release>  <FromSP>  <ToSP>
-    row_pattern = re.compile(
-        r"([A-Z_][A-Z0-9_]{2,})\s+(\d{2,4})\s+(\d{1,4})\s+(\d{1,4})", re.MULTILINE
+    logger.debug("SW Components block (first 600):\n%s", block[:600])
+
+    # Component: uppercase letter followed by letters/digits/underscores/hyphens
+    # Examples: SAP_BASIS, BC-UPG-NA, S4CORE, SAPSOL
+    _comp = r"([A-Z][A-Z0-9_\-]{2,30})"
+    # Release: 2-4 digits, optionally dot-separated (752, 7.52, 2023)
+    _rel = r"(\d{1,4}(?:\.\d{1,2})?)"
+    # SP level: optional "SP" prefix + digits, plain digits, or "latest"/"-"/"all"
+    _sp = r"(SP\s*\d{1,4}|\d{1,4}|latest|all|-)"
+
+    row_re = re.compile(
+        _comp + r"\s+" + _rel + r"\s+" + _sp + r"\s+" + _sp,
+        re.MULTILINE | re.IGNORECASE,
     )
-    for row_m in row_pattern.finditer(block):
+    header_words = {
+        "component", "release", "from", "to", "level", "software",
+        "support", "package", "version", "type", "note", "sp",
+    }
+
+    def _norm_sp(v: str) -> str:
+        v = re.sub(r"(?i)^SP\s*", "", v).lstrip("0") or "0"
+        return v
+
+    for row_m in row_re.finditer(block):
+        comp, release, sp_from, sp_to = (row_m.group(i) for i in range(1, 5))
+        # Skip table header rows
+        if comp.lower() in header_words or release.lower() in header_words:
+            continue
         entries.append(NoteApplicabilityMatrixEntry(
-            component=row_m.group(1),
-            release=row_m.group(2),
-            sp_from=row_m.group(3),
-            sp_to=row_m.group(4),
+            component=comp,
+            release=release.replace(".", ""),   # 7.52 → 752
+            sp_from=_norm_sp(sp_from),
+            sp_to=_norm_sp(sp_to),
         ))
 
     if not entries:
