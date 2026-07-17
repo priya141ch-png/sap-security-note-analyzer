@@ -25,7 +25,7 @@ from rfc.connector import (
 )
 from rfc.notes_checker import fetch_implemented_notes
 from rfc.system_collector import collect_system_info
-from storage.credentials import list_profiles, save_suser, load_suser, delete_suser
+from storage.credentials import list_profiles
 from storage.note_metadata import (
     build_manual_metadata, get_note, note_from_sap_note, save_note,
 )
@@ -463,56 +463,54 @@ def _show_note_meta(note) -> None:
 
 
 def _fetch_note_section(note_number: str) -> None:
-    """Unified note fetch UI: auto-download or fallback options."""
-    portal_url = f"https://me.sap.com/notes/{note_number}"
-    s_user, s_pass = load_suser()
+    """
+    Note fetch UI.
+
+    SAP portal requires interactive SAML/2FA login — automated download
+    is not possible. Workflow:
+      1. Click Download Note  → opens SAP portal in a new tab
+      2. Log in and download the PDF from SAP portal
+      3. Upload the PDF using the uploader that appears below
+    """
+    portal_url     = f"https://me.sap.com/notes/{note_number}"
+    # Direct PDF print link (user can save as PDF from browser)
+    portal_pdf_url = f"https://me.sap.com/notes/{note_number}/E"
 
     col_dl, col_view = st.columns([2, 1])
 
     with col_dl:
-        # ── Auto-download button ──────────────────────────────────────────────
+        # Clicking Download triggers the upload area to appear
         if st.button(
             f"⬇️  Download Note {note_number}",
             type="primary", use_container_width=True,
-            help="Automatically downloads note metadata into your workspace",
-            key=f"auto_dl_{note_number}",
+            help="Opens SAP portal → log in → download PDF → upload below",
+            key=f"open_dl_{note_number}",
         ):
-            if not s_user or not s_pass:
-                st.session_state["_show_suser_form"] = True
-                st.warning("⚠️ Enter your SAP S-user credentials below to enable auto-download.")
-            else:
-                _auto_download_note(note_number, s_user, s_pass)
+            st.session_state["_show_upload"] = True
 
     with col_view:
-        # ── View Note button ──────────────────────────────────────────────────
         st.link_button(
             f"🔗 View Note {note_number}",
             portal_url,
             use_container_width=True,
-            help="Opens SAP Support Portal note in a new browser tab",
+            help="Opens this note on SAP Support Portal in a new browser tab",
         )
 
-    # ── S-user credentials (shown when needed or if user wants to update) ────
-    show_form = st.session_state.get("_show_suser_form", not bool(s_user))
-    if s_user and not show_form:
-        with st.expander(f"🔑 SAP S-user: `{s_user}` — click to change"):
-            _suser_credentials_form()
-    else:
+    # ── Guided download + upload flow ─────────────────────────────────────────
+    if st.session_state.get("_show_upload"):
         st.info(
-            "🔑 **SAP S-user credentials** — enter once, saved encrypted in your workspace. "
-            "Used only to download note metadata from SAP Support Portal."
+            f"**Step 1 — Open SAP portal in a new tab (link opens above)**\n\n"
+            f"👉 Click **View Note {note_number}** → log in with your S-user "
+            f"→ on the note page, click the **Download** / **PDF** button "
+            f"→ save the file to your computer.\n\n"
+            f"**Step 2 — Upload the file below**"
         )
-        _suser_credentials_form()
+        _note_upload_form(note_number)
+        st.divider()
 
-    # ── Fallback options ──────────────────────────────────────────────────────
-    with st.expander("📄 Manual options (upload file / enter manually)"):
-        tab_up, tab_man = st.tabs(["📄 Upload PDF / HTML", "✏️ Enter Manually"])
-        with tab_up:
-            st.caption("Upload the SAP Note PDF or HTML print-view.")
-            _note_upload_form(note_number)
-        with tab_man:
-            st.caption("Enter key note details manually (no file needed).")
-            _manual_metadata_form(note_number)
+    # ── Manual entry fallback ─────────────────────────────────────────────────
+    with st.expander("✏️ Enter note metadata manually (no file needed)"):
+        _manual_metadata_form(note_number)
 
 
 def _suser_credentials_form() -> None:
@@ -542,14 +540,14 @@ def _suser_credentials_form() -> None:
 
 
 def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
-    """Fetch note PDF from SAP portal automatically and cache it."""
+    """Attempt automated PDF fetch (only works for S-users without 2FA)."""
     from adapters.sap_online_fetcher import fetch_note_pdf
     with st.spinner(f"Downloading Note {note_number} from SAP Support Portal…"):
         pdf_bytes, error = fetch_note_pdf(note_number, s_user, s_pass)
     if error:
         st.error("❌ Auto-download failed")
         st.markdown(error)
-        st.session_state["_manual_options_open"] = True
+        st.session_state["_show_upload"] = True
         return
     with st.spinner("Parsing note metadata…"):
         try:
