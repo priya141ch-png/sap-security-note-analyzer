@@ -106,24 +106,28 @@ def fetch_note_pdf(note_number: str, s_user: str, s_password: str) -> Tuple[Opti
         if _is_pdf(r):
             return r.content, ""
 
-        # Check for login failure (still on accounts.sap.com with a form)
-        if "accounts.sap.com" in r.url:
+        # ── Step 5: SAML assertion form → POST back to launchpad ──────────────
+        # accounts.sap.com returns a SAML assertion form after successful login.
+        # Must submit this BEFORE doing any error checks — otherwise we mistake
+        # the SSO redirect page (accounts.sap.com/saml2/idp/sso?redirect=true)
+        # for a login failure.
+        if "accounts.sap.com" in r.url and _has_form(r):
             from bs4 import BeautifulSoup as _BS
-            soup = _BS(r.content, "lxml")
-            # If there's still a password field → wrong password
-            if soup.find("input", {"type": "password"}):
+            _soup = _BS(r.content, "lxml")
+            _form = _soup.find("form")
+            _has_saml = bool(_soup.find("input", {"name": "SAMLResponse"}))
+            _has_pw   = bool(_soup.find("input", {"type": "password"}))
+            _otp_inp  = (
+                _soup.find("input", {"autocomplete": "one-time-code"})
+                or _soup.find("input", {"name": lambda n: n and "otp" in n.lower() if n else False})
+                or _soup.find("input", {"id":   lambda i: i and "otp" in i.lower() if i else False})
+            )
+            if _has_pw:
                 return None, (
                     "Login failed — incorrect S-user ID or password. "
                     "Update your credentials in the S-user settings."
                 )
-            err = soup.find(class_=lambda c: c and "error" in c.lower() if c else False)
-            if err:
-                return None, f"Login error: {err.get_text(strip=True)[:300]}"
-            # 2FA challenge
-            otp_input = (soup.find("input", {"autocomplete": "one-time-code"})
-                         or soup.find("input", {"name": lambda n: n and "otp" in n.lower() if n else False})
-                         or soup.find("input", {"id": lambda i: i and "otp" in i.lower() if i else False}))
-            if otp_input:
+            if _otp_inp:
                 return None, (
                     "SAP Support Portal requires **Two-Factor Authentication (2FA)** "
                     "for your S-user account.\n\n"
@@ -132,14 +136,16 @@ def fetch_note_pdf(note_number: str, s_user: str, s_password: str) -> Tuple[Opti
                     "**Workaround:** Use the **Upload note file** option below — open SAP portal "
                     "in your browser, log in manually, download the PDF, then upload it here."
                 )
-            return None, (
-                f"Unexpected response after login at {r.url}. "
-                "The portal may require 2-factor authentication."
-            )
+            # SAMLResponse form (or unknown form after login) — submit it
+            logger.debug("Step 5: Posting SAML assertion from %s (SAMLResponse=%s)",
+                         r.url, _has_saml)
+            r = _submit_form(session, r, "Step 5 (SAML assertion)")
+            if r is None:
+                return None, "SAML assertion POST back to launchpad failed."
 
-        # ── Step 5: SAML assertion form → POST back to launchpad ──────────────
-        if _has_form(r):
-            logger.debug("Step 5: Posting SAML assertion from %s", r.url)
+        elif _has_form(r):
+            # Non-accounts form (e.g. launchpad intermediate redirect)
+            logger.debug("Step 5: Posting intermediate form from %s", r.url)
             r = _submit_form(session, r, "Step 5 (SAML assertion)")
             if r is None:
                 return None, "SAML assertion POST back to launchpad failed."
