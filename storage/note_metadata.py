@@ -120,6 +120,28 @@ def build_manual_metadata(
     )
 
 
+def build_rfc_metadata(note_dict: dict) -> NoteMetadata:
+    """Build NoteMetadata from RFC note fetch result (rfc/note_fetcher.py)."""
+    matrix = [
+        NoteApplicabilityMatrixEntry(
+            component=e.get("component", ""),
+            release=e.get("release", ""),
+            sp_from=e.get("sp_from", ""),
+            sp_to=e.get("sp_to", ""),
+        )
+        for e in note_dict.get("applicability_matrix", [])
+    ]
+    return NoteMetadata(
+        note_number=note_dict["note_number"],
+        title=note_dict.get("title", ""),
+        severity=note_dict.get("severity", ""),
+        cvss_score=float(note_dict.get("cvss_score") or 0.0),
+        components=list({e.component for e in matrix}),
+        applicability_matrix=matrix,
+        source="rfc",
+    )
+
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 def _dict_to_meta(d: dict) -> NoteMetadata:

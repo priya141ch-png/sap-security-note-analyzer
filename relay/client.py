@@ -112,6 +112,13 @@ def _execute(request: dict) -> dict:
             conn.close()
             return {"ok": True, "data": notes, "error": err}
 
+        elif call_type == "fetch_note":
+            from rfc.note_fetcher import fetch_note_from_system
+            note_number = request.get("note_number", "")
+            note_dict, err = fetch_note_from_system(conn, note_number)
+            conn.close()
+            return {"ok": bool(note_dict), "data": note_dict, "error": err}
+
         else:
             conn.close()
             return {"ok": False, "error": f"Unknown request type: {call_type}"}

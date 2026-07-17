@@ -27,7 +27,7 @@ from rfc.notes_checker import fetch_implemented_notes
 from rfc.system_collector import collect_system_info
 from storage.credentials import list_profiles
 from storage.note_metadata import (
-    build_manual_metadata, get_note, note_from_sap_note, save_note,
+    build_manual_metadata, build_rfc_metadata, get_note, note_from_sap_note, save_note,
 )
 from storage.report_generator import export_excel, export_json, export_pdf
 from ui.components import section
@@ -466,27 +466,28 @@ def _fetch_note_section(note_number: str) -> None:
     """
     Note fetch UI.
 
-    SAP portal requires interactive SAML/2FA login — automated download
-    is not possible. Workflow:
-      1. Click Download Note  → opens SAP portal in a new tab
-      2. Log in and download the PDF from SAP portal
-      3. Upload the PDF using the uploader that appears below
+    Priority order:
+      1. Auto-fetch from connected SAP system via RFC (fully automatic, no portal)
+      2. Upload a PDF/HTML downloaded manually from SAP portal
+      3. Enter metadata manually
     """
-    portal_url     = f"https://me.sap.com/notes/{note_number}"
-    # Direct PDF print link (user can save as PDF from browser)
-    portal_pdf_url = f"https://me.sap.com/notes/{note_number}/E"
+    portal_url = f"https://me.sap.com/notes/{note_number}"
+    rfc_ready  = PYRFC_AVAILABLE or is_relay_connected()
 
     col_dl, col_view = st.columns([2, 1])
 
     with col_dl:
-        # Clicking Download triggers the upload area to appear
         if st.button(
             f"⬇️  Download Note {note_number}",
             type="primary", use_container_width=True,
-            help="Opens SAP portal → log in → download PDF → upload below",
-            key=f"open_dl_{note_number}",
+            help="Fetches note metadata from your connected SAP system (no portal login needed)",
+            key=f"dl_{note_number}",
         ):
-            st.session_state["_show_upload"] = True
+            if rfc_ready:
+                _rfc_fetch_note(note_number)
+            else:
+                st.session_state["_show_upload"] = True
+                st.warning("No RFC connection — upload a PDF instead.")
 
     with col_view:
         st.link_button(
@@ -496,21 +497,90 @@ def _fetch_note_section(note_number: str) -> None:
             help="Opens this note on SAP Support Portal in a new browser tab",
         )
 
-    # ── Guided download + upload flow ─────────────────────────────────────────
-    if st.session_state.get("_show_upload"):
-        st.info(
-            f"**Step 1 — Open SAP portal in a new tab (link opens above)**\n\n"
-            f"👉 Click **View Note {note_number}** → log in with your S-user "
-            f"→ on the note page, click the **Download** / **PDF** button "
-            f"→ save the file to your computer.\n\n"
-            f"**Step 2 — Upload the file below**"
+    # Show RFC status hint
+    if rfc_ready:
+        st.caption(
+            "✅ RFC connected — Download fetches note data directly from your SAP system. "
+            "No SAP portal login needed."
         )
-        _note_upload_form(note_number)
-        st.divider()
+    else:
+        st.caption("🔌 No RFC connection — connect relay or upload a PDF below.")
+
+    # ── Upload fallback ───────────────────────────────────────────────────────
+    if st.session_state.get("_show_upload") or not rfc_ready:
+        with st.expander("📄 Upload note file (PDF or HTML from SAP portal)",
+                         expanded=bool(st.session_state.get("_show_upload"))):
+            st.caption(
+                f"Open [SAP portal]({portal_url}) → log in → download the note PDF "
+                f"→ upload it here."
+            )
+            _note_upload_form(note_number)
 
     # ── Manual entry fallback ─────────────────────────────────────────────────
     with st.expander("✏️ Enter note metadata manually (no file needed)"):
         _manual_metadata_form(note_number)
+
+
+def _rfc_fetch_note(note_number: str) -> None:
+    """Fetch note metadata from the connected SAP system via RFC."""
+    from rfc.note_fetcher import fetch_note_from_system
+    import dataclasses
+
+    profiles = list_profiles()
+    if not profiles:
+        st.error("No RFC profiles configured.")
+        return
+
+    # Pick a profile — prefer one that was last successfully tested
+    profile = next((p for p in profiles if p.last_test_ok), profiles[0])
+
+    # Need RFC password for the connection
+    rfc_pw = st.session_state.get("nc_rfc_password", "")
+    if not rfc_pw:
+        st.warning(
+            "⚠️ Enter the RFC password in **Step 3** below, then click Download again. "
+            "The RFC connection needs it to read note data from the SAP system."
+        )
+        return
+
+    with st.spinner(f"Fetching Note {note_number} from {profile.host} via RFC…"):
+        try:
+            if PYRFC_AVAILABLE:
+                conn = build_connection(profile, rfc_pw)
+                conn.connect()
+                note_dict, error = fetch_note_from_system(conn, note_number)
+                conn.close()
+            else:
+                pd = dataclasses.asdict(profile) if dataclasses.is_dataclass(profile) else vars(profile)
+                result = relay_call("fetch_note", pd, rfc_pw, note_number=note_number)
+                if not result.get("ok"):
+                    error = result.get("error", "Relay fetch failed")
+                    note_dict = None
+                else:
+                    note_dict = result.get("data")
+                    error = ""
+        except Exception as exc:
+            note_dict = None
+            error = str(exc)
+
+    if error or not note_dict:
+        st.warning(
+            f"⚠️ Could not fetch Note {note_number} from the SAP system: "
+            f"{error or 'No data returned'}\n\n"
+            "The note may not have been downloaded to this system via transaction SNOTE yet. "
+            "Use the **Upload note file** option below to import from SAP portal."
+        )
+        st.session_state["_show_upload"] = True
+        return
+
+    meta = build_rfc_metadata(note_dict)
+    save_note(meta)
+    st.success(
+        f"✅ Note **{note_number}** fetched from SAP system — "
+        f"**{meta.title or '(no title)'}** | "
+        f"{len(meta.applicability_matrix)} applicability entr{'ies' if len(meta.applicability_matrix) != 1 else 'y'}"
+    )
+    st.rerun()
 
 
 def _suser_credentials_form() -> None:

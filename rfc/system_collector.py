@@ -43,7 +43,7 @@ def collect_system_info(conn: SapRfcConnection) -> LiveSystemInfo:
         rows = read_table(
             conn,
             table="CVERS",
-            fields=["COMPONENT", "RELEASE", "EXTRELEASE", "SP", "PATCH", "DESC_TEXT"],
+            fields=["COMPONENT", "RELEASE", "EXTRELEASE", "SP", "PATCH"],
             max_rows=500,
         )
         for row in rows:
@@ -55,7 +55,7 @@ def collect_system_info(conn: SapRfcConnection) -> LiveSystemInfo:
                 release=row.get("RELEASE", "").strip(),
                 sp_level=row.get("SP", "").strip(),
                 patch_level=row.get("PATCH", "").strip(),
-                description=row.get("DESC_TEXT", "").strip(),
+                description="",
             ))
             # Enrich kernel from SAPEXE component
             comp_upper = comp_name.upper()

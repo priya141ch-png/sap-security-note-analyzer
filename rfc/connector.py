@@ -164,10 +164,11 @@ def is_relay_connected() -> bool:
         return False
 
 
-def relay_call(call_type: str, profile_dict: dict, plain_password: str) -> dict:
+def relay_call(call_type: str, profile_dict: dict, plain_password: str, **extra) -> dict:
     """
     Send an RFC request to the relay server and wait for the relay client to execute it.
     Returns the result dict from the relay client.
+    Extra kwargs (e.g. note_number=) are merged into the payload.
     """
     import requests as _req
     import time
@@ -182,6 +183,7 @@ def relay_call(call_type: str, profile_dict: dict, plain_password: str) -> dict:
             "password": plain_password,
             "lang": profile_dict.get("lang", "EN"),
         },
+        **extra,
     }
 
     # Submit request
