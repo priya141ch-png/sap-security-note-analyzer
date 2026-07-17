@@ -33,7 +33,7 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Permanent URL that never changes — used to discover the (possibly changing) relay URL
-DISCOVERY_URL  = "https://diffusive-knee-handwork.ngrok-free.dev/app/static/relay.json"
+DISCOVERY_URL  = "https://gist.githubusercontent.com/priya141ch-png/29120e8c133492f893b2b6a65158532a/raw/relay.json"
 POLL_INTERVAL  = 2        # seconds between polls
 RETRY_BACKOFF  = 30       # seconds to wait after repeated connection failures
 MAX_ERRORS_BEFORE_BACKOFF = 5

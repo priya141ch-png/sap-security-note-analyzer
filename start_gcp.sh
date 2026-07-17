@@ -44,10 +44,34 @@ done
 UI_URL="https://$NGROK_DOMAIN"
 printf "SAP Security Note Analyzer\nUI: %s\nRelay: %s\nStarted: %s\n" "$UI_URL" "$RELAY_URL" "$(date)" > "$BASE/URLS.txt"
 
-# Write relay URL to static file so relay client can auto-discover it
-mkdir -p "$BASE/static"
-printf '{"relay_url":"%s","updated":"%s"}\n' "$RELAY_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BASE/static/relay.json"
-echo "Relay discovery file: $BASE/static/relay.json"
+# Push relay URL to GitHub Gist so relay client can auto-discover it
+# Gist ID is permanent — raw URL never changes across GCP restarts
+GIST_ID="29120e8c133492f893b2b6a65158532a"
+# GITHUB_TOKEN must be set in ~/.bashrc on the VM — never stored in this file
+python3 - <<PYEOF
+import json, urllib.request
+token = "$GITHUB_TOKEN"
+relay_url = "$RELAY_URL"
+payload = json.dumps({
+    "files": {
+        "relay.json": {
+            "content": json.dumps({"relay_url": relay_url, "updated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"})
+        }
+    }
+}).encode()
+req = urllib.request.Request(
+    "https://api.github.com/gists/$GIST_ID",
+    data=payload,
+    method="PATCH",
+    headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    }
+)
+with urllib.request.urlopen(req) as resp:
+    print("Discovery gist updated OK")
+PYEOF
 
 echo "========================================"
 echo "  UI   : $UI_URL   (permanent)"
