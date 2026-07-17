@@ -249,10 +249,11 @@ def read_table(
     """
     Call RFC_READ_TABLE and return parsed rows as list of dicts.
     Uses '|' delimiter for reliable field splitting.
+    Pass fields=[] to read all fields (no FIELDS parameter restriction).
     """
     delimiter = "|"
     options = [{"TEXT": w} for w in (where or [])]
-    field_params = [{"FIELDNAME": f} for f in fields]
+    field_params = [{"FIELDNAME": f} for f in fields] if fields else []
 
     result = conn.call(
         "RFC_READ_TABLE",

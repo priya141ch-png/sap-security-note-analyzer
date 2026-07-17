@@ -27,14 +27,14 @@ def fetch_implemented_notes(conn: SapRfcConnection) -> tuple[List[str], str]:
     """
     Return (implemented_note_numbers, warning_message).
     implemented_note_numbers contains zero-stripped note numbers where PRSTATUS = ' '.
+    Tries CWBNTCUST first, then CWBNTSAP as fallback.
     """
     try:
-        rows = read_table(
-            conn,
-            table="CWBNTCUST",
-            fields=["NUMM", "VERSNO", "PRSTATUS"],
-            max_rows=10000,
-        )
+        # Try minimal field set first (FIELD_NOT_VALID can mean table doesn't exist on NPL)
+        try:
+            rows = read_table(conn, table="CWBNTCUST", fields=["NUMM", "PRSTATUS"], max_rows=10000)
+        except RfcCallError:
+            rows = read_table(conn, table="CWBNTCUST", fields=[], max_rows=10000)
         implemented: List[str] = []
         for row in rows:
             prstatus = row.get("PRSTATUS", "N").strip()
