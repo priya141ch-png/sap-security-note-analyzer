@@ -199,8 +199,7 @@ def fetch_note_pdf(note_number: str, s_user: str, s_password: str) -> Tuple[Opti
             if portal_down:
                 return None, (
                     "SAP Support Portal PDF service is temporarily unavailable (maintenance). "
-                    "Automatic browser fallback also failed: " + me_err + "
-"
+                    "Automatic browser fallback also failed: " + me_err + " "
                     "Please try again in a few minutes, or use the Upload note file option."
                 )
             return None, (
