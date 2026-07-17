@@ -25,7 +25,7 @@ from rfc.connector import (
 )
 from rfc.notes_checker import fetch_implemented_notes
 from rfc.system_collector import collect_system_info
-from storage.credentials import list_profiles
+from storage.credentials import list_profiles, load_suser, save_suser, delete_suser
 from storage.note_metadata import (
     build_manual_metadata, build_rfc_metadata, get_note, note_from_sap_note, save_note,
 )
@@ -80,7 +80,7 @@ def render() -> None:
 
     if note_number:
         if cached_note:
-            col_m, col_c = st.columns([9, 1])
+            col_m, col_pdf, col_c = st.columns([7, 2, 1])
             with col_m:
                 st.success(
                     f"✅ Metadata loaded — **{cached_note.title or note_number}** "
@@ -90,8 +90,19 @@ def render() -> None:
                 )
                 with st.expander("View full metadata"):
                     _show_note_meta(cached_note)
+            with col_pdf:
+                pdf_bytes = _get_note_pdf(note_number)
+                if pdf_bytes:
+                    st.download_button(
+                        "📄 View PDF",
+                        data=pdf_bytes,
+                        file_name=f"SAP_Note_{note_number}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        help="Download the note PDF to open in your PDF viewer",
+                    )
             with col_c:
-                if st.button("🔄", help="Clear cache and re-upload"):
+                if st.button("🔄", help="Clear cache and re-download"):
                     from storage.note_metadata import delete_note
                     delete_note(note_number)
                     st.rerun()
@@ -464,15 +475,11 @@ def _show_note_meta(note) -> None:
 
 def _fetch_note_section(note_number: str) -> None:
     """
-    Note fetch UI.
-
-    Priority order:
-      1. Auto-fetch from connected SAP system via RFC (fully automatic, no portal)
-      2. Upload a PDF/HTML downloaded manually from SAP portal
-      3. Enter metadata manually
+    Note fetch UI — auto-downloads PDF from SAP portal using saved S-user credentials.
+    Falls back to file upload if login fails (e.g. 2FA required).
     """
     portal_url = f"https://me.sap.com/notes/{note_number}"
-    rfc_ready  = PYRFC_AVAILABLE or is_relay_connected()
+    s_user, s_pass = load_suser()
 
     col_dl, col_view = st.columns([2, 1])
 
@@ -480,44 +487,53 @@ def _fetch_note_section(note_number: str) -> None:
         if st.button(
             f"⬇️  Download Note {note_number}",
             type="primary", use_container_width=True,
-            help="Fetches note metadata from your connected SAP system (no portal login needed)",
+            help="Downloads note PDF from SAP portal using your saved S-user credentials",
             key=f"dl_{note_number}",
         ):
-            if rfc_ready:
-                _rfc_fetch_note(note_number)
+            if not s_user or not s_pass:
+                st.session_state["_show_suser_form"] = True
+                st.warning("⚠️ Enter your SAP S-user credentials below first.")
             else:
-                st.session_state["_show_upload"] = True
-                st.warning("No RFC connection — upload a PDF instead.")
+                _auto_download_note(note_number, s_user, s_pass)
 
     with col_view:
-        st.link_button(
-            f"🔗 View Note {note_number}",
-            portal_url,
-            use_container_width=True,
-            help="Opens this note on SAP Support Portal in a new browser tab",
-        )
+        existing_pdf = _get_note_pdf(note_number)
+        if existing_pdf:
+            st.download_button(
+                "📄 View Note PDF",
+                data=existing_pdf,
+                file_name=f"SAP_Note_{note_number}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                help="Open the downloaded note PDF",
+            )
+        else:
+            st.link_button(
+                f"🔗 View Note {note_number}",
+                portal_url,
+                use_container_width=True,
+                help="Opens this note on SAP Support Portal in a new browser tab",
+            )
 
-    # Show RFC status hint
-    if rfc_ready:
-        st.caption(
-            "✅ RFC connected — Download fetches note data directly from your SAP system. "
-            "No SAP portal login needed."
-        )
+    # ── S-user credentials ────────────────────────────────────────────────────
+    show_form = st.session_state.get("_show_suser_form", not bool(s_user))
+    if s_user and not show_form:
+        with st.expander(f"🔑 SAP S-user: `{s_user}` — click to change"):
+            _suser_credentials_form()
     else:
-        st.caption("🔌 No RFC connection — connect relay or upload a PDF below.")
+        st.info("🔑 Enter your SAP S-user credentials — saved encrypted, used only to download notes.")
+        _suser_credentials_form()
 
-    # ── Upload fallback ───────────────────────────────────────────────────────
-    if st.session_state.get("_show_upload") or not rfc_ready:
-        with st.expander("📄 Upload note file (PDF or HTML from SAP portal)",
-                         expanded=bool(st.session_state.get("_show_upload"))):
+    # ── Upload fallback (shown if download failed) ────────────────────────────
+    if st.session_state.get("_show_upload"):
+        with st.expander("📄 Upload note file (PDF or HTML)", expanded=True):
             st.caption(
-                f"Open [SAP portal]({portal_url}) → log in → download the note PDF "
-                f"→ upload it here."
+                f"Open [SAP portal]({portal_url}) → log in → download the PDF → upload here."
             )
             _note_upload_form(note_number)
 
     # ── Manual entry fallback ─────────────────────────────────────────────────
-    with st.expander("✏️ Enter note metadata manually (no file needed)"):
+    with st.expander("✏️ Enter note metadata manually"):
         _manual_metadata_form(note_number)
 
 
@@ -610,12 +626,12 @@ def _suser_credentials_form() -> None:
 
 
 def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
-    """Attempt automated PDF fetch (only works for S-users without 2FA)."""
+    """Auto-download note PDF from SAP portal using saved S-user credentials."""
     from adapters.sap_online_fetcher import fetch_note_pdf
-    with st.spinner(f"Downloading Note {note_number} from SAP Support Portal…"):
+    with st.spinner(f"Logging in to SAP portal and downloading Note {note_number}…"):
         pdf_bytes, error = fetch_note_pdf(note_number, s_user, s_pass)
     if error:
-        st.error("❌ Auto-download failed")
+        st.error("❌ Download failed")
         st.markdown(error)
         st.session_state["_show_upload"] = True
         return
@@ -630,15 +646,38 @@ def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
         return
     meta = note_from_sap_note(sap_note, source="auto-downloaded")
     save_note(meta)
+    # Save raw PDF to workspace so View Note can open it
+    _save_note_pdf(note_number, pdf_bytes)
     st.success(
-        f"✅ Note **{note_number}** downloaded and saved to your workspace — "
-        f"**{sap_note.title or '(no title)'}**"
+        f"✅ Note **{note_number}** downloaded — **{sap_note.title or '(no title)'}**"
     )
     if sap_note.parser_warnings:
         with st.expander("⚠️ Parser warnings"):
             for w in sap_note.parser_warnings:
                 st.caption(w)
     st.rerun()
+
+
+def _save_note_pdf(note_number: str, pdf_bytes: bytes) -> None:
+    """Save raw PDF to workspace for later viewing."""
+    try:
+        from storage.user_store import workspace_dir
+        pdf_dir = workspace_dir("note_pdfs")
+        (pdf_dir / f"{note_number}.pdf").write_bytes(pdf_bytes)
+    except Exception as exc:
+        logger.warning("Could not save PDF to workspace: %s", exc)
+
+
+def _get_note_pdf(note_number: str) -> bytes | None:
+    """Read saved PDF from workspace."""
+    try:
+        from storage.user_store import workspace_dir
+        pdf_path = workspace_dir("note_pdfs") / f"{note_number}.pdf"
+        if pdf_path.exists():
+            return pdf_path.read_bytes()
+    except Exception:
+        pass
+    return None
 
 
 def _note_upload_form(note_number: str) -> None:
