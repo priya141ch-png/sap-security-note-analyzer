@@ -46,3 +46,10 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# Runtime files — never commit
+ui/static/relay.json
+relay.log
+streamlit.log
+test_trace2.py
+static/relay.json
