@@ -177,13 +177,14 @@ def run():
             if int(time.time()) % 300 < POLL_INTERVAL:
                 log.info("Relay heartbeat — waiting for RFC requests...")
 
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError, requests.exceptions.HTTPError):
             consecutive_errors += 1
             if consecutive_errors <= MAX_ERRORS_BEFORE_BACKOFF:
                 log.warning(f"Cannot reach relay ({relay_url}). Retrying in {POLL_INTERVAL}s...")
             elif consecutive_errors == MAX_ERRORS_BEFORE_BACKOFF + 1:
-                log.warning(f"Relay unreachable after {consecutive_errors} attempts — backing off. "
-                            f"Will auto-rediscover new URL from {DISCOVERY_URL}")
+                log.warning(f"Relay unreachable after {consecutive_errors} attempts — "
+                            f"backing off to {RETRY_BACKOFF}s intervals. "
+                            f"(Normal if not on VPN — will reconnect automatically when VPN is active.)")
                 time.sleep(RETRY_BACKOFF)
                 # Force immediate rediscover on next iteration
                 last_rediscover = 0
@@ -193,6 +194,7 @@ def run():
             log.info("Relay stopped manually.")
             break
         except Exception as exc:
+            consecutive_errors += 1
             log.warning(f"Unexpected error: {exc}")
 
         time.sleep(RETRY_BACKOFF if consecutive_errors > MAX_ERRORS_BEFORE_BACKOFF else POLL_INTERVAL)
