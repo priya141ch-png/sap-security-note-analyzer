@@ -13,6 +13,8 @@ sleep 1
 
 cd "$BASE"
 source .venv/bin/activate
+# Load VM-only secrets (never committed to git)
+[ -f "$HOME/.sap_env" ] && source "$HOME/.sap_env"
 
 nohup python relay/server.py > "$LOG/relay.log" 2>&1 &
 echo "Relay server PID $! on port 8081"
@@ -49,8 +51,15 @@ printf "SAP Security Note Analyzer\nUI: %s\nRelay: %s\nStarted: %s\n" "$UI_URL" 
 GIST_ID="29120e8c133492f893b2b6a65158532a"
 # GITHUB_TOKEN must be set in ~/.bashrc on the VM — never stored in this file
 python3 - <<PYEOF
-import json, urllib.request
-token = "$GITHUB_TOKEN"
+import json, urllib.request, os
+# Read token from VM-only env file (not in git)
+token = os.environ.get("GITHUB_TOKEN", "")
+if not token:
+    env_file = os.path.expanduser("~/.sap_env")
+    if os.path.exists(env_file):
+        for line in open(env_file):
+            if line.startswith("GITHUB_TOKEN="):
+                token = line.strip().split("=", 1)[1]
 relay_url = "$RELAY_URL"
 payload = json.dumps({
     "files": {
