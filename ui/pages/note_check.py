@@ -652,9 +652,7 @@ def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
         f"✅ Note **{note_number}** downloaded — **{sap_note.title or '(no title)'}**"
     )
     if sap_note.parser_warnings:
-        with st.expander("⚠️ Parser warnings"):
-            for w in sap_note.parser_warnings:
-                st.caption(w)
+        st.warning('Parser warnings: ' + ' | '.join(sap_note.parser_warnings))
     st.rerun()
 
 
