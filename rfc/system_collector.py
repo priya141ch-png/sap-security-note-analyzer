@@ -40,12 +40,26 @@ def collect_system_info(conn: SapRfcConnection) -> LiveSystemInfo:
     # ── Step 2: Installed components from CVERS ───────────────────────────────
     components: List[SystemComponent] = []
     try:
-        rows = read_table(
-            conn,
-            table="CVERS",
-            fields=["COMPONENT", "RELEASE", "EXTRELEASE", "SP", "PATCH"],
-            max_rows=500,
-        )
+        # Try specific fields first; fall back to all fields (fields=[]) if
+        # any field is invalid on this SAP version (e.g. NPL/752 may lack EXTRELEASE)
+        try:
+            rows = read_table(
+                conn,
+                table="CVERS",
+                fields=["COMPONENT", "RELEASE", "EXTRELEASE", "SP", "PATCH"],
+                max_rows=500,
+            )
+        except RfcCallError:
+            try:
+                rows = read_table(
+                    conn,
+                    table="CVERS",
+                    fields=["COMPONENT", "RELEASE", "SP", "PATCH"],
+                    max_rows=500,
+                )
+            except RfcCallError:
+                rows = read_table(conn, table="CVERS", fields=[], max_rows=500)
+
         for row in rows:
             comp_name = row.get("COMPONENT", "").strip()
             if not comp_name:

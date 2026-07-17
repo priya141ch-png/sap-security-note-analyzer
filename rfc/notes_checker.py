@@ -30,11 +30,16 @@ def fetch_implemented_notes(conn: SapRfcConnection) -> tuple[List[str], str]:
     Tries CWBNTCUST first, then CWBNTSAP as fallback.
     """
     try:
-        # Try minimal field set first (FIELD_NOT_VALID can mean table doesn't exist on NPL)
+        # Try minimal field set; fall back to all fields; if table is unavailable return empty list
         try:
             rows = read_table(conn, table="CWBNTCUST", fields=["NUMM", "PRSTATUS"], max_rows=10000)
         except RfcCallError:
-            rows = read_table(conn, table="CWBNTCUST", fields=[], max_rows=10000)
+            try:
+                rows = read_table(conn, table="CWBNTCUST", fields=[], max_rows=10000)
+            except RfcCallError:
+                # Table inaccessible on this system (e.g. NPL demo — notes never downloaded via SNOTE)
+                logger.info("CWBNTCUST not accessible — treating as empty (no notes implemented)")
+                return [], ""
         implemented: List[str] = []
         for row in rows:
             prstatus = row.get("PRSTATUS", "N").strip()
