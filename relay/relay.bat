@@ -18,7 +18,7 @@ set "PATH=C:\nwrfcsdk\lib;%PATH%"
 
 REM Relay URL — update this with the URL shown in the app's Settings page
 REM after each GCP restart (rare). Get it from: cat ~/sap-analyzer/URLS.txt on the VM
-set "SAP_RELAY_URL=https://create-none-wma-var.trycloudflare.com"
+set "SAP_RELAY_URL=https://hosts-recognition-cut-plugins.trycloudflare.com"
 
 echo  Connecting to relay: %SAP_RELAY_URL%
 echo.
