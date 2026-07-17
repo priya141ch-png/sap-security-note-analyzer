@@ -154,6 +154,19 @@ def fetch_note_pdf(note_number: str, s_user: str, s_password: str) -> Tuple[Opti
             logger.info("SAP Note %s downloaded (%d bytes)", note_number, len(r.content))
             return r.content, ""
 
+        # ── Step 5b: authn ACS may return another SAMLResponse form → launchpad ─
+        # After POSTing SAMLResponse to authn.hana.ondemand.com/saml2/sp/acs,
+        # the ACS endpoint itself returns a second SAMLResponse form that must be
+        # POSTed to launchpad.support.sap.com to fully establish the session.
+        if _has_form(r) and "launchpad" not in r.url:
+            logger.debug("Step 5b: submitting ACS relay form from %s", r.url)
+            r = _submit_form(session, r, "Step 5b (ACS relay)")
+            if r is None:
+                return None, "SAML ACS relay to launchpad failed."
+            if _is_pdf(r):
+                logger.info("SAP Note %s downloaded (%d bytes)", note_number, len(r.content))
+                return r.content, ""
+
         # ── Step 6: Final GET of PDF URL with authenticated session ────────────
         logger.debug("Step 6: Final PDF fetch with authenticated session")
         time.sleep(0.5)
@@ -163,6 +176,12 @@ def fetch_note_pdf(note_number: str, s_user: str, s_password: str) -> Tuple[Opti
             logger.info("SAP Note %s downloaded (%d bytes)", note_number, len(r.content))
             return r.content, ""
 
+        body_text = r.text[:500] if r.text else ""
+        if "Service Unavailable" in body_text or "temporarily down" in body_text:
+            return None, (
+                "SAP Support Portal PDF service is temporarily unavailable (maintenance). "
+                "The SAML login succeeded — please try again in a few minutes."
+            )
         ct = r.headers.get("Content-Type", "")
         return None, (
             f"Authentication completed but PDF not returned (Content-Type: {ct}). "
