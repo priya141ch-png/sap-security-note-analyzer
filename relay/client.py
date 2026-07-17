@@ -32,14 +32,32 @@ except ImportError:
     import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# Priority: command-line arg → env var → default
-RELAY_URL = (
-    sys.argv[1] if len(sys.argv) > 1
-    else _os.environ.get("SAP_RELAY_URL", "https://create-none-wma-var.trycloudflare.com")
-)
-POLL_INTERVAL = 2        # seconds between polls
-RETRY_BACKOFF  = 30      # seconds to wait after repeated connection failures
+# Permanent URL that never changes — used to discover the (possibly changing) relay URL
+DISCOVERY_URL  = "https://diffusive-knee-handwork.ngrok-free.dev/app/static/relay.json"
+POLL_INTERVAL  = 2        # seconds between polls
+RETRY_BACKOFF  = 30       # seconds to wait after repeated connection failures
 MAX_ERRORS_BEFORE_BACKOFF = 5
+REDISCOVER_INTERVAL = 60  # seconds between re-checking the relay URL for changes
+
+
+def _discover_relay_url(fallback: str) -> str:
+    """Fetch the current relay URL from the permanent discovery endpoint."""
+    try:
+        r = requests.get(DISCOVERY_URL, timeout=10)
+        r.raise_for_status()
+        url = r.json().get("relay_url", "").strip()
+        if url and url.startswith("http"):
+            return url
+    except Exception as exc:
+        log.debug(f"Discovery endpoint unreachable: {exc}")
+    return fallback
+
+
+# Priority: command-line arg → env var → auto-discover
+_cli_url  = sys.argv[1] if len(sys.argv) > 1 else ""
+_env_url  = _os.environ.get("SAP_RELAY_URL", "")
+_default  = _cli_url or _env_url or ""   # empty = will auto-discover on startup
+RELAY_URL = _default  # resolved in run()
 
 
 def _to_dict(obj):
@@ -106,27 +124,50 @@ def run():
     log.info("=" * 55)
     log.info("  SAP Security Note Analyzer — RFC Relay Client")
     log.info("=" * 55)
-    log.info(f"  Relay URL : {RELAY_URL}")
+    log.info(f"  Discovery : {DISCOVERY_URL}")
     log.info(f"  Log file  : {_log_path}")
-    log.info("  Running silently. Check relay_client.log for status.")
+    log.info("  Running silently. Auto-discovers relay URL on every GCP restart.")
+
+    # Resolve starting relay URL
+    relay_url = _default or _discover_relay_url("")
+    if not relay_url:
+        log.warning("Could not discover relay URL at startup — will retry every 30s.")
+    else:
+        log.info(f"  Relay URL : {relay_url}")
 
     consecutive_errors = 0
+    last_rediscover    = time.time()
 
     while True:
+        # ── Periodically re-discover relay URL (handles GCP restarts) ─────────
+        now = time.time()
+        if now - last_rediscover >= REDISCOVER_INTERVAL:
+            new_url = _discover_relay_url(relay_url)
+            last_rediscover = now
+            if new_url and new_url != relay_url:
+                log.info(f"Relay URL updated: {relay_url} → {new_url}")
+                relay_url = new_url
+                consecutive_errors = 0  # reset errors on URL change
+
+        if not relay_url:
+            time.sleep(RETRY_BACKOFF)
+            relay_url = _discover_relay_url("")
+            continue
+
         try:
-            r = requests.get(f"{RELAY_URL}/relay/poll", timeout=8)
+            r = requests.get(f"{relay_url}/relay/poll", timeout=8)
             r.raise_for_status()
             items = r.json().get("requests", [])
             consecutive_errors = 0
 
             for item in items:
-                rid = item["request_id"]
-                req = item["request"]
+                rid   = item["request_id"]
+                req   = item["request"]
                 rtype = req.get("type", "?")
                 host  = req.get("profile", {}).get("host", "?")
                 log.info(f"RFC {rtype.upper()} → {host} ...")
                 result = _execute(req)
-                requests.post(f"{RELAY_URL}/relay/result/{rid}", json=result, timeout=10)
+                requests.post(f"{relay_url}/relay/result/{rid}", json=result, timeout=10)
                 if result.get("ok"):
                     log.info(f"  ✓ done — {result.get('sid', '')}")
                 else:
@@ -139,12 +180,13 @@ def run():
         except requests.exceptions.ConnectionError:
             consecutive_errors += 1
             if consecutive_errors <= MAX_ERRORS_BEFORE_BACKOFF:
-                log.warning(f"Cannot reach relay ({RELAY_URL}). Retrying in {POLL_INTERVAL}s...")
+                log.warning(f"Cannot reach relay ({relay_url}). Retrying in {POLL_INTERVAL}s...")
             elif consecutive_errors == MAX_ERRORS_BEFORE_BACKOFF + 1:
-                log.warning(f"Relay unreachable after {consecutive_errors} attempts. "
-                            f"Backing off to {RETRY_BACKOFF}s intervals. "
-                            f"(Normal if not on VPN — will reconnect automatically when VPN is active.)")
+                log.warning(f"Relay unreachable after {consecutive_errors} attempts — backing off. "
+                            f"Will auto-rediscover new URL from {DISCOVERY_URL}")
                 time.sleep(RETRY_BACKOFF)
+                # Force immediate rediscover on next iteration
+                last_rediscover = 0
                 continue
 
         except KeyboardInterrupt:
@@ -153,7 +195,6 @@ def run():
         except Exception as exc:
             log.warning(f"Unexpected error: {exc}")
 
-        # Use backoff interval when many errors, otherwise normal interval
         time.sleep(RETRY_BACKOFF if consecutive_errors > MAX_ERRORS_BEFORE_BACKOFF else POLL_INTERVAL)
 
 

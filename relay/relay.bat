@@ -16,14 +16,11 @@ cd /d "%SCRIPT_DIR%.."
 set "SAPNWRFC_HOME=C:\nwrfcsdk"
 set "PATH=C:\nwrfcsdk\lib;%PATH%"
 
-REM Relay URL — update this with the URL shown in the app's Settings page
-REM after each GCP restart (rare). Get it from: cat ~/sap-analyzer/URLS.txt on the VM
-set "SAP_RELAY_URL=https://hosts-recognition-cut-plugins.trycloudflare.com"
-
-echo  Connecting to relay: %SAP_RELAY_URL%
+echo  Auto-discovering relay URL from permanent endpoint...
+echo  (No manual URL update needed - updates automatically on GCP restart)
 echo.
 
-.venv\Scripts\python.exe relay\client.py "%SAP_RELAY_URL%"
+.venv\Scripts\python.exe relay\client.py
 
 echo.
 echo  Relay stopped.

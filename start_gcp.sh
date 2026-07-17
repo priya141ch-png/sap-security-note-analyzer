@@ -19,6 +19,7 @@ echo "Relay server PID $! on port 8081"
 
 nohup streamlit run ui/streamlit_app.py \
   --server.port 8080 --server.headless true --server.address 0.0.0.0 \
+  --server.enableStaticServing true \
   > "$LOG/streamlit.log" 2>&1 &
 echo "Streamlit PID $! on port 8080"
 
@@ -42,6 +43,11 @@ done
 
 UI_URL="https://$NGROK_DOMAIN"
 printf "SAP Security Note Analyzer\nUI: %s\nRelay: %s\nStarted: %s\n" "$UI_URL" "$RELAY_URL" "$(date)" > "$BASE/URLS.txt"
+
+# Write relay URL to static file so relay client can auto-discover it
+mkdir -p "$BASE/static"
+printf '{"relay_url":"%s","updated":"%s"}\n' "$RELAY_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$BASE/static/relay.json"
+echo "Relay discovery file: $BASE/static/relay.json"
 
 echo "========================================"
 echo "  UI   : $UI_URL   (permanent)"
