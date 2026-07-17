@@ -485,14 +485,11 @@ def _fetch_note_section(note_number: str) -> None:
 
     with col_view:
         # ── View Note button ──────────────────────────────────────────────────
-        st.markdown(
-            f"<a href='{portal_url}' target='_blank' style='"
-            f"display:block;text-align:center;padding:9px 0;"
-            f"border:1px solid #D0D5DD;border-radius:6px;"
-            f"text-decoration:none;color:#002A45;font-size:14px;"
-            f"background:#fff;font-weight:500'>"
-            f"🔗 View Note {note_number}</a>",
-            unsafe_allow_html=True,
+        st.link_button(
+            f"🔗 View Note {note_number}",
+            portal_url,
+            use_container_width=True,
+            help="Opens SAP Support Portal note in a new browser tab",
         )
 
     # ── S-user credentials (shown when needed or if user wants to update) ────
@@ -550,8 +547,9 @@ def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
     with st.spinner(f"Downloading Note {note_number} from SAP Support Portal…"):
         pdf_bytes, error = fetch_note_pdf(note_number, s_user, s_pass)
     if error:
-        st.error(f"❌ Auto-download failed: {error}")
-        st.info("Use the **Manual options** expander below to upload the note file instead.")
+        st.error("❌ Auto-download failed")
+        st.markdown(error)
+        st.session_state["_manual_options_open"] = True
         return
     with st.spinner("Parsing note metadata…"):
         try:
