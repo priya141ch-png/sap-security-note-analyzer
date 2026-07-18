@@ -7,7 +7,20 @@ the PDF download triggered by the PDF button on the note page.
 """
 from __future__ import annotations
 import logging
+import os
 import pathlib
+
+# Auto-set LD_LIBRARY_PATH so headless Chromium finds GTK/X11 libs
+# extracted to user-space under ~/lib_deps (no sudo needed)
+def _set_lib_path():
+    home = pathlib.Path.home()
+    dirs = [
+        str(home / "lib_deps" / "usr" / "lib" / "x86_64-linux-gnu"),
+        str(home / "lib_deps" / "usr" / "lib"),
+    ]
+    existing = os.environ.get("LD_LIBRARY_PATH", "")
+    os.environ["LD_LIBRARY_PATH"] = ":".join(dirs + ([existing] if existing else []))
+_set_lib_path()
 import tempfile
 import time
 from typing import Optional, Tuple
