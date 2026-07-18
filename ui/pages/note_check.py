@@ -626,33 +626,69 @@ def _suser_credentials_form() -> None:
 
 
 def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
-    """Auto-download note PDF from SAP portal using saved S-user credentials."""
+    """
+    Auto-download note from SAP portal using saved S-user credentials.
+
+    Primary path: launchpad.support.sap.com PDF
+    Fallback:     me.sap.com /backend/raw/sapnotes/Detail JSON API
+    """
     from adapters.sap_online_fetcher import fetch_note_pdf
+
+    # --- Primary: launchpad PDF ---
     with st.spinner(f"Logging in to SAP portal and downloading Note {note_number}…"):
         pdf_bytes, error = fetch_note_pdf(note_number, s_user, s_pass)
-    if error:
-        st.error("❌ Download failed")
-        st.markdown(error)
+
+    if not error and pdf_bytes:
+        with st.spinner("Parsing note metadata…"):
+            try:
+                sap_note = parse_note_pdf(pdf_bytes, f"{note_number}.pdf")
+            except Exception as exc:
+                st.error(f"Parse error: {exc}")
+                return
+        if sap_note:
+            meta = note_from_sap_note(sap_note, source="auto-downloaded")
+            save_note(meta)
+            _save_note_pdf(note_number, pdf_bytes)
+            st.success(f"✅ Note **{note_number}** downloaded — **{sap_note.title or '(no title)'}**")
+            if sap_note.parser_warnings:
+                st.warning("Parser warnings: " + " | ".join(sap_note.parser_warnings))
+            st.rerun()
+            return
+        error = "PDF download succeeded but parsing failed."
+
+    # --- Fallback: me.sap.com JSON API ---
+    st.info(
+        f"SAP launchpad PDF service unavailable ({error[:120]}). "
+        "Trying me.sap.com API fallback…"
+    )
+    with st.spinner(f"Fetching Note {note_number} from me.sap.com…"):
+        try:
+            from adapters.sap_me_fetcher import fetch_note_json_me
+            from adapters.me_note_parser import parse_note_json_me
+            note_dict, me_err = fetch_note_json_me(note_number, s_user, s_pass)
+        except Exception as exc:
+            st.error(f"❌ me.sap.com fetch error: {exc}")
+            st.session_state["_show_upload"] = True
+            return
+
+    if me_err or not note_dict:
+        st.error(f"❌ Both download methods failed.\n\nLaunchpad: {error}\n\nme.sap.com: {me_err}")
         st.session_state["_show_upload"] = True
         return
-    with st.spinner("Parsing note metadata…"):
-        try:
-            sap_note = parse_note_pdf(pdf_bytes, f"{note_number}.pdf")
-        except Exception as exc:
-            st.error(f"Parse error: {exc}")
-            return
+
+    sap_note = parse_note_json_me(note_dict)
     if not sap_note:
-        st.error("Could not parse the downloaded note. Try uploading it manually.")
+        st.error("Could not parse the note data from me.sap.com.")
+        st.session_state["_show_upload"] = True
         return
-    meta = note_from_sap_note(sap_note, source="auto-downloaded")
+
+    meta = note_from_sap_note(sap_note, source="auto-downloaded (me.sap.com)")
     save_note(meta)
-    # Save raw PDF to workspace so View Note can open it
-    _save_note_pdf(note_number, pdf_bytes)
-    st.success(
-        f"✅ Note **{note_number}** downloaded — **{sap_note.title or '(no title)'}**"
-    )
+    # Save note_dict JSON so View Note can use it
+    _save_note_json(note_number, note_dict)
+    st.success(f"✅ Note **{note_number}** fetched via me.sap.com — **{sap_note.title or '(no title)'}**")
     if sap_note.parser_warnings:
-        st.warning('Parser warnings: ' + ' | '.join(sap_note.parser_warnings))
+        st.warning("Parser warnings: " + " | ".join(sap_note.parser_warnings))
     st.rerun()
 
 
@@ -673,6 +709,32 @@ def _get_note_pdf(note_number: str) -> bytes | None:
         pdf_path = workspace_dir("note_pdfs") / f"{note_number}.pdf"
         if pdf_path.exists():
             return pdf_path.read_bytes()
+    except Exception:
+        pass
+    return None
+
+
+def _save_note_json(note_number: str, note_dict: dict) -> None:
+    """Save note JSON dict from me.sap.com API to workspace for View Note."""
+    try:
+        import json
+        from storage.user_store import workspace_dir
+        json_dir = workspace_dir("note_pdfs")
+        (json_dir / f"{note_number}.json").write_text(
+            json.dumps(note_dict, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        logger.warning("Could not save note JSON to workspace: %s", exc)
+
+
+def _get_note_json(note_number: str) -> dict | None:
+    """Read saved note JSON dict from workspace."""
+    try:
+        import json
+        from storage.user_store import workspace_dir
+        p = workspace_dir("note_pdfs") / f"{note_number}.json"
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         pass
     return None
