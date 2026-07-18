@@ -702,9 +702,10 @@ def _parse_and_cache(note_number: str, uploaded) -> None:
     save_note(meta)
     st.success(f"✅ Note **{note_number}** loaded — {sap_note.title or '(no title)'}")
     if sap_note.parser_warnings:
-        with st.expander("⚠️ Parser warnings"):
-            for w in sap_note.parser_warnings:
-                st.caption(w)
+        st.warning("Parser warnings: " + " | ".join(sap_note.parser_warnings))
+
+
+
     st.rerun()
 
 
