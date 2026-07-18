@@ -6,7 +6,7 @@ NGROK_DOMAIN="diffusive-knee-handwork.ngrok-free.dev"
 mkdir -p "$LOG"
 
 pkill -f "streamlit run ui/streamlit_app" 2>/dev/null || true
-pkill -f "relay/server.py" 2>/dev/null || true
+# relay/server.py is managed by systemd — do not pkill it
 pkill -f "cloudflared tunnel" 2>/dev/null || true
 pkill -f "ngrok http" 2>/dev/null || true
 sleep 1
@@ -16,8 +16,8 @@ source .venv/bin/activate
 # Load VM-only secrets (never committed to git)
 [ -f "$HOME/.sap_env" ] && source "$HOME/.sap_env"
 
-nohup python relay/server.py > "$LOG/relay.log" 2>&1 &
-echo "Relay server PID $! on port 8081"
+# Relay managed by systemd (sap-relay.service) — do not start here
+
 
 nohup streamlit run ui/streamlit_app.py \
   --server.port 8080 --server.headless true --server.address 0.0.0.0 \
