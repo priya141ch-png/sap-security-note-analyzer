@@ -9,7 +9,12 @@ Flow:
   5. Aggregated results table + per-system evidence + download reports
 """
 from __future__ import annotations
+import json
 import logging
+import pathlib
+import tempfile
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime
 
@@ -481,6 +486,9 @@ def _fetch_note_section(note_number: str) -> None:
     portal_url = f"https://me.sap.com/notes/{note_number}"
     s_user, s_pass = load_suser()
 
+    # --- Poll background download ---
+    _poll_dl(note_number)
+
     col_dl, col_view = st.columns([2, 1])
 
     with col_dl:
@@ -494,7 +502,8 @@ def _fetch_note_section(note_number: str) -> None:
                 st.session_state["_show_suser_form"] = True
                 st.warning("⚠️ Enter your SAP S-user credentials below first.")
             else:
-                _auto_download_note(note_number, s_user, s_pass)
+                _start_dl(note_number, s_user, s_pass)
+                st.rerun()
 
     with col_view:
         existing_pdf = _get_note_pdf(note_number)
@@ -625,71 +634,84 @@ def _suser_credentials_form() -> None:
                 st.rerun()
 
 
-def _auto_download_note(note_number: str, s_user: str, s_pass: str) -> None:
-    """
-    Auto-download note from SAP portal using saved S-user credentials.
+_DL_DIR = pathlib.Path(tempfile.gettempdir()) / "sap_dl"
+_DL_DIR.mkdir(exist_ok=True)
 
-    Primary path: launchpad.support.sap.com PDF
-    Fallback:     me.sap.com /backend/raw/sapnotes/Detail JSON API
-    """
-    from adapters.sap_online_fetcher import fetch_note_pdf
 
-    # --- Primary: launchpad PDF ---
-    with st.spinner(f"Logging in to SAP portal and downloading Note {note_number}…"):
-        pdf_bytes, error = fetch_note_pdf(note_number, s_user, s_pass)
+def _dl_result_file(note_number: str) -> pathlib.Path:
+    return _DL_DIR / f"{note_number}.json"
 
-    if not error and pdf_bytes:
-        with st.spinner("Parsing note metadata…"):
-            try:
-                sap_note = parse_note_pdf(pdf_bytes, f"{note_number}.pdf")
-            except Exception as exc:
-                st.error(f"Parse error: {exc}")
-                return
-        if sap_note:
-            meta = note_from_sap_note(sap_note, source="auto-downloaded")
-            save_note(meta)
-            _save_note_pdf(note_number, pdf_bytes)
-            st.success(f"✅ Note **{note_number}** downloaded — **{sap_note.title or '(no title)'}**")
-            if sap_note.parser_warnings:
-                st.warning("Parser warnings: " + " | ".join(sap_note.parser_warnings))
-            st.rerun()
-            return
-        error = "PDF download succeeded but parsing failed."
 
-    # --- Fallback: me.sap.com JSON API ---
-    st.info(
-        f"SAP launchpad PDF service unavailable ({error[:120]}). "
-        "Trying me.sap.com API fallback…"
-    )
-    with st.spinner(f"Fetching Note {note_number} from me.sap.com…"):
+def _start_dl(note_number: str, s_user: str, s_pass: str) -> None:
+    """Kick off background download thread and set running flag in session state."""
+    rf = _dl_result_file(note_number)
+    rf.unlink(missing_ok=True)
+    st.session_state[f"_dl_{note_number}"] = "running"
+
+    def worker():
         try:
             from adapters.sap_me_fetcher import fetch_note_json_me
-            from adapters.me_note_parser import parse_note_json_me
-            note_dict, me_err = fetch_note_json_me(note_number, s_user, s_pass)
+            note_dict, err = fetch_note_json_me(note_number, s_user, s_pass)
+            if err:
+                rf.write_text(json.dumps({"error": err}))
+            else:
+                rf.write_text(json.dumps({"ok": True, "note_dict": note_dict}))
         except Exception as exc:
-            st.error(f"❌ me.sap.com fetch error: {exc}")
-            st.session_state["_show_upload"] = True
-            return
+            import traceback
+            rf.write_text(json.dumps({"error": traceback.format_exc()}))
 
-    if me_err or not note_dict:
-        st.error(f"❌ Both download methods failed.\n\nLaunchpad: {error}\n\nme.sap.com: {me_err}")
-        st.session_state["_show_upload"] = True
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _poll_dl(note_number: str) -> None:
+    """On each rerun, check if the background download finished."""
+    status = st.session_state.get(f"_dl_{note_number}")
+    if not status:
         return
 
-    sap_note = parse_note_json_me(note_dict)
-    if not sap_note:
-        st.error("Could not parse the note data from me.sap.com.")
-        st.session_state["_show_upload"] = True
+    rf = _dl_result_file(note_number)
+    if status == "running":
+        if rf.exists():
+            result = json.loads(rf.read_text())
+            rf.unlink(missing_ok=True)
+            if result.get("error"):
+                err_msg = result.get("error", "")[:300]
+                st.error("Download failed: " + err_msg)
+                st.session_state[f"_dl_{note_number}"] = "error"
+                st.session_state["_show_upload"] = True
+            else:
+                try:
+                    from adapters.me_note_parser import parse_note_json_me
+                    note_dict = result["note_dict"]
+                    sap_note  = parse_note_json_me(note_dict)
+                    if not sap_note:
+                        st.error("Fetched note data but could not parse it.")
+                        st.session_state[f"_dl_{note_number}"] = "error"
+                        return
+                    meta = note_from_sap_note(sap_note, source="auto-downloaded (me.sap.com)")
+                    save_note(meta)
+                    _save_note_json(note_number, note_dict)
+                    st.session_state[f"_dl_{note_number}"] = "done"
+                    st.session_state[f"_dl_title_{note_number}"] = sap_note.title or ""
+                    if sap_note.parser_warnings:
+                        st.session_state[f"_dl_warn_{note_number}"] = " | ".join(sap_note.parser_warnings)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Parse error: {exc}")
+                    st.session_state[f"_dl_{note_number}"] = "error"
+        else:
+            st.info(f"Fetching Note {note_number} from me.sap.com (logging in... ~60s)")
+            time.sleep(3)
+            st.rerun()
         return
 
-    meta = note_from_sap_note(sap_note, source="auto-downloaded (me.sap.com)")
-    save_note(meta)
-    # Save note_dict JSON so View Note can use it
-    _save_note_json(note_number, note_dict)
-    st.success(f"✅ Note **{note_number}** fetched via me.sap.com — **{sap_note.title or '(no title)'}**")
-    if sap_note.parser_warnings:
-        st.warning("Parser warnings: " + " | ".join(sap_note.parser_warnings))
-    st.rerun()
+    if status == "done":
+        title = st.session_state.get(f"_dl_title_{note_number}", "")
+        st.success(f"Note {note_number} downloaded: {title}")
+        warn = st.session_state.get(f"_dl_warn_{note_number}", "")
+        if warn:
+            st.warning(f"Parser warnings: {warn}")
+        del st.session_state[f"_dl_{note_number}"]
 
 
 def _save_note_pdf(note_number: str, pdf_bytes: bytes) -> None:
