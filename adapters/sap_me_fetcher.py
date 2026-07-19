@@ -28,8 +28,17 @@ _lib()
 
 from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 
-s_user, s_pass, note, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-ARGS = ["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]
+s_user, s_pass, note, out = os.environ["_SAP_U"], os.environ["_SAP_P"], sys.argv[1], sys.argv[2]
+ARGS = [
+    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+    "--no-zygote", "--disable-software-rasterizer",
+    "--disable-extensions", "--disable-background-networking",
+    "--disable-default-apps", "--disable-sync",
+    "--disable-translate", "--mute-audio",
+    "--no-first-run", "--safebrowsing-disable-auto-update",
+    "--disable-features=site-per-process,TranslateUI",
+    "--js-flags=--max-old-space-size=64",
+]
 BASE = "https://me.sap.com"
 
 api = {}
@@ -87,12 +96,15 @@ def _run_worker(s_user: str, s_password: str, note_number: str) -> Tuple[Optiona
     wf  = pathlib.Path(tempfile.mktemp(suffix=".py"))
     try:
         wf.write_text(_WORKER)
+        env = os.environ.copy()
+        env["_SAP_U"] = s_user
+        env["_SAP_P"] = s_password
         result = subprocess.run(
-            [sys.executable, str(wf), s_user, s_password, note_number, str(tmp)],
+            [sys.executable, str(wf), note_number, str(tmp)],
             timeout=150,
             capture_output=True,
             text=True,
-            env=os.environ.copy(),
+            env=env,
         )
         if result.returncode != 0:
             msg = (result.stderr or result.stdout or "")[-400:].strip()

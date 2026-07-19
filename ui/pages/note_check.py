@@ -754,8 +754,8 @@ def _poll_dl(note_number: str) -> None:
                     st.error(f"Parse error: {exc}")
                     st.session_state[f"_dl_{note_number}"] = "error"
         else:
-            st.info(f"Fetching Note {note_number} from me.sap.com (logging in... ~60s)")
-            time.sleep(3)
+            st.info(f"Fetching Note {note_number} from me.sap.com — logging in and fetching (~60s). Please wait...")
+            time.sleep(10)
             st.rerun()
         return
 
