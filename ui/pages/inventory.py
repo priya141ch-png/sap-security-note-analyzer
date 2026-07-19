@@ -2,7 +2,9 @@
 from __future__ import annotations
 import pandas as pd
 import streamlit as st
-from rfc.connector import PYRFC_AVAILABLE, build_connection, is_relay_connected
+from rfc.connector import (
+    PYRFC_AVAILABLE, build_connection, is_relay_connected, relay_call,
+)
 from rfc.system_collector import collect_system_info
 from rfc.notes_checker import fetch_implemented_notes
 from storage.credentials import decrypt_password, list_profiles
@@ -24,13 +26,14 @@ def render() -> None:
     if not profiles:
         st.info("Add an RFC profile first (RFC Connection Profiles page).")
         return
+    relay_ok = is_relay_connected()
     if not PYRFC_AVAILABLE:
-        if is_relay_connected():
+        if relay_ok:
             st.success("🔗 **Relay connected** — inventory will be collected through your VPN laptop.")
         else:
             st.info(
                 "🔌 **RFC via Relay** — To collect live inventory, connect to office VPN and run "
-                "**`relay\\relay.bat`** on your laptop. No installation needed on this machine."
+                "**`relay\relay.bat`** on your laptop. No installation needed on this machine."
             )
             return
 
@@ -49,31 +52,62 @@ def render() -> None:
             st.error("Enter the RFC password.")
             return
         profile = next(p for p in profiles if p.name == sel_profile)
+        profile_dict = {"host": profile.host, "sysnr": profile.sysnr, "client": profile.client,
+                        "user": profile.user, "lang": profile.lang, "timeout": profile.timeout}
         prog = st.progress(0.0)
         try:
-            conn = build_connection(
-                {"host": profile.host, "sysnr": profile.sysnr, "client": profile.client,
-                 "user": profile.user, "lang": profile.lang, "timeout": profile.timeout},
-                pw,
-            )
-            conn.connect()
-            prog.progress(0.3, text="Connected — reading CVERS…")
-            system = collect_system_info(conn)
-            prog.progress(0.7, text="Reading CWBNTCUST…")
-            impl, warn = fetch_implemented_notes(conn)
-            system.implemented_notes = impl
-            if warn:
-                system.collection_warnings.append(warn)
-            conn.close()
+            if PYRFC_AVAILABLE:
+                conn = build_connection(profile_dict, pw)
+                conn.connect()
+                prog.progress(0.3, text="Connected — reading CVERS…")
+                system = collect_system_info(conn)
+                prog.progress(0.7, text="Reading CWBNTCUST…")
+                impl, warn = fetch_implemented_notes(conn)
+                system.implemented_notes = impl
+                if warn:
+                    system.collection_warnings.append(warn)
+                conn.close()
+            else:
+                # Route through relay client running on VPN laptop
+                prog.progress(0.2, text="Sending to relay client…")
+                r1 = relay_call("system_info", profile_dict, pw)
+                if not r1.get("ok"):
+                    raise RuntimeError(f"Relay system_info failed: {r1.get('error', 'unknown')}")
+                from core.domain_models import LiveSystemInfo, SystemComponent
+                raw = r1["data"]
+                system = LiveSystemInfo(
+                    sid=raw.get("sid", ""),
+                    client=raw.get("client", ""),
+                    host=raw.get("host", ""),
+                    sap_release=raw.get("sap_release", ""),
+                    kernel_release=raw.get("kernel_release", ""),
+                    kernel_patch=raw.get("kernel_patch", ""),
+                    db_system=raw.get("db_system", ""),
+                    db_version=raw.get("db_version", ""),
+                    os_version=raw.get("os_version", ""),
+                    components=[SystemComponent(**c) for c in raw.get("components", [])],
+                    implemented_notes=raw.get("implemented_notes", []),
+                    collected_at=raw.get("collected_at", ""),
+                    collection_warnings=raw.get("collection_warnings", []),
+                )
+                prog.progress(0.7, text="Reading implemented notes…")
+                r2 = relay_call("implemented_notes", profile_dict, pw)
+                if r2.get("ok"):
+                    system.implemented_notes = r2.get("data", [])
+                    if r2.get("error"):
+                        system.collection_warnings.append(r2["error"])
+
             prog.progress(1.0)
             st.session_state["last_system"] = system
-            st.success(f"Inventory collected from {system.sid} — {len(system.components)} components, "
-                       f"{len(impl)} implemented notes.")
+            st.success(
+                f"Inventory collected from **{system.sid}** — "
+                f"{len(system.components)} components, "
+                f"{len(system.implemented_notes)} implemented notes."
+            )
             _show_inventory(system)
         except Exception as exc:
             prog.empty()
             st.error(f"Collection failed: {exc}")
-
 
 def _show_inventory(system) -> None:
     section(f"System: {system.sid}  |  Client {system.client}  |  {system.host}")

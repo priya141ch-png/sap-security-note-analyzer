@@ -53,7 +53,7 @@ def render() -> None:
             if ev.component.release_match:
                 st.success("Release match: ✅")
             else:
-                st.error("Release mismatch: ❌ (different release — not in scope)")
+                st.error("Release not in affected range: ❌ — system release is outside the note's affected range")
 
         section("Support Package Check")
         c5, c6, c7, c8 = st.columns(4)
@@ -71,8 +71,18 @@ def render() -> None:
         c11.metric("Already Implemented", "✅ Yes" if ev.implementation.already_implemented else "No")
         c12.metric("Confidence", f"{result.confidence:.0%}")
 
-        section("Kernel")
-        st.code(f"Kernel release: {ev.kernel_release or '—'}   Patch level: {ev.kernel_patch or '—'}")
+        section("Kernel / DB / OS Version Checks")
+        ver_checks = getattr(ev, "version_checks", [])
+        if ver_checks:
+            for vc in ver_checks:
+                icon = {"ok": "✅", "affected": "⚠️", "unknown": "❓"}.get(vc.status, "—")
+                st.markdown(
+                    f"{icon} **{vc.dimension.upper()}**: Required `{vc.required}` | Installed `{vc.installed}`"
+                    + (f"  _{vc.note}_" if vc.note else "")
+                )
+        else:
+            st.code(f"Kernel release: {ev.kernel_release or '—'}   Patch level: {ev.kernel_patch or '—'}"
+                    + (f"   DB: {ev.db_version or '—'}   OS: {ev.os_version or '—'}" ))
         st.progress(result.confidence)
 
     with tab_inv:
