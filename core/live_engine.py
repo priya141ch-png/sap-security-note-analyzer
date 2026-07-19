@@ -1,132 +1,224 @@
+
 """
 Live applicability engine.
-Combines live RFC system data + note metadata → structured decision with evidence.
 
 Decision ladder:
-  1. Already Implemented  — note found in CWBNTCUST with PRSTATUS=' '
-  2. Not Applicable       — required component not installed, OR release/SP outside range
-  3. Applicable           — component installed, release matches, SP in range
-  4. Needs Manual Review  — component found but version data is ambiguous/missing
-  5. Insufficient Data    — no note metadata to compare against
+  1. Already Implemented  — note in CWBNTCUST
+  2. Not Applicable       — component absent OR release outside affected range
+                            OR system beyond fix SP
+  3. Applicable           — component+release in range, not yet fixed
+  4. Needs Manual Review  — version data ambiguous / kernel-DB-OS match unclear
+  5. Insufficient Data    — no note metadata
 """
-
 from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from core.domain_models import (
-    ApplicabilityEvidence,
-    ComponentEvidence,
-    ImplementationEvidence,
-    LiveApplicabilityResult,
-    LiveSystemInfo,
-    NoteMetadata,
-    SpEvidence,
+    ApplicabilityEvidence, ComponentEvidence, ImplementationEvidence,
+    LiveApplicabilityResult, LiveSystemInfo, NoteMetadata,
+    SpEvidence, VersionCheckResult,
 )
 
 logger = logging.getLogger(__name__)
 
-# Statuses
-APPLICABLE         = "Applicable"
-NOT_APPLICABLE     = "Not Applicable"
+APPLICABLE          = "Applicable"
+NOT_APPLICABLE      = "Not Applicable"
 ALREADY_IMPLEMENTED = "Already Implemented"
-NEEDS_REVIEW       = "Needs Manual Review"
-INSUFFICIENT_DATA  = "Insufficient Data"
+NEEDS_REVIEW        = "Needs Manual Review"
+INSUFFICIENT_DATA   = "Insufficient Data"
 
+
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def _norm_release(r: str) -> int:
+    """Normalise a release string to a comparable integer (e.g. '752' -> 752)."""
     if not r:
         return 0
     cleaned = re.sub(r"[^0-9]", "", r)
     if not cleaned:
         return 0
     val = int(cleaned)
-    return val * 10 if val < 100 else val
+    # 3-digit releases (750) stay as-is; 2-digit (75) → *10; 1-digit → *100
+    return val
 
 
-def _norm_sp(sp: str) -> int:
-    if not sp:
+def _parse_sp_seq(sp_str: str) -> int:
+    """
+    Extract SP sequence number.
+    SAPK-75804INSAPBASIS -> 4  (5th+6th digit of the block after SAPK-)
+    '0004' -> 4
+    """
+    if not sp_str:
         return -1
-    cleaned = re.sub(r"[^0-9]", "", sp)
+    m = re.match(r"SAPK-\d{3}(\d{2})\w+", sp_str, re.I)
+    if m:
+        return int(m.group(1))
+    cleaned = re.sub(r"[^0-9]", "", sp_str)
     return int(cleaned) if cleaned else -1
 
 
-def _normalize_comp(name: str) -> str:
+def _norm_comp(name: str) -> str:
     n = name.upper().strip()
-    aliases = {"BASIS": "SAP_BASIS", "ABA": "SAP_ABA", "HR": "SAP_HR"}
-    return aliases.get(n, n)
+    return {"BASIS": "SAP_BASIS", "ABA": "SAP_ABA", "HR": "SAP_HR"}.get(n, n)
 
 
 def _find_component(system: LiveSystemInfo, comp_name: str):
-    target = _normalize_comp(comp_name)
+    target = _norm_comp(comp_name)
     for c in system.components:
-        if _normalize_comp(c.name) == target:
+        if _norm_comp(c.name) == target:
             return c
-    # Fuzzy: prefix match
     for c in system.components:
-        cn = _normalize_comp(c.name)
+        cn = _norm_comp(c.name)
         if target in cn or cn in target:
             return c
     return None
 
 
-def evaluate_live(
-    system: LiveSystemInfo,
-    note: NoteMetadata,
-) -> LiveApplicabilityResult:
-    """Main evaluation function — returns a fully populated LiveApplicabilityResult."""
+def _version_tuple(v: str) -> Tuple[int, ...]:
+    parts = re.findall(r"\d+", v)
+    return tuple(int(p) for p in parts) if parts else (0,)
 
+
+def _check_kernel(note: NoteMetadata, system: LiveSystemInfo) -> Optional[VersionCheckResult]:
+    if not note.kernel_min:
+        return None
+    installed = system.kernel_patch or system.kernel_release or ""
+    if not installed:
+        return VersionCheckResult(
+            dimension="kernel",
+            required=f">= {note.kernel_min}",
+            installed="unknown",
+            status="unknown",
+            note="Kernel version not collected — check manually via SM51 / disp+work -V",
+        )
+    req   = _version_tuple(note.kernel_min)
+    inst  = _version_tuple(installed)
+    ok    = inst >= req
+    return VersionCheckResult(
+        dimension="kernel",
+        required=f">= {note.kernel_min}",
+        installed=installed,
+        status="ok" if ok else "affected",
+        note="" if ok else f"Kernel {installed} is below required {note.kernel_min}",
+    )
+
+
+def _check_db(note: NoteMetadata, system: LiveSystemInfo) -> Optional[VersionCheckResult]:
+    if not note.db_type:
+        return None
+    installed_type = (system.db_system or "").upper()
+    installed_ver  = system.db_version or ""
+    if note.db_type.upper() not in installed_type and installed_type not in note.db_type.upper():
+        return VersionCheckResult(
+            dimension="db",
+            required=f"{note.db_type} >= {note.db_version_min}",
+            installed=f"{system.db_system} {installed_ver}".strip(),
+            status="ok",
+            note=f"Note targets {note.db_type}; system uses {system.db_system} — not affected",
+        )
+    if not installed_ver or not note.db_version_min:
+        return VersionCheckResult(
+            dimension="db",
+            required=f"{note.db_type} >= {note.db_version_min or '?'}",
+            installed=f"{system.db_system} {installed_ver}".strip(),
+            status="unknown",
+            note="DB version not collected — check manually",
+        )
+    req  = _version_tuple(note.db_version_min)
+    inst = _version_tuple(installed_ver)
+    ok   = inst >= req
+    return VersionCheckResult(
+        dimension="db",
+        required=f"{note.db_type} >= {note.db_version_min}",
+        installed=f"{system.db_system} {installed_ver}".strip(),
+        status="ok" if ok else "affected",
+        note="" if ok else f"DB version {installed_ver} is below required {note.db_version_min}",
+    )
+
+
+def _check_os(note: NoteMetadata, system: LiveSystemInfo) -> Optional[VersionCheckResult]:
+    if not note.os_type:
+        return None
+    installed = system.os_version or ""
+    if not installed:
+        return VersionCheckResult(
+            dimension="os",
+            required=f"{note.os_type} >= {note.os_version_min}",
+            installed="unknown",
+            status="unknown",
+            note="OS version not collected — check manually",
+        )
+    if note.os_type.lower() not in installed.lower():
+        return VersionCheckResult(
+            dimension="os",
+            required=f"{note.os_type} >= {note.os_version_min}",
+            installed=installed,
+            status="ok",
+            note=f"Note targets {note.os_type}; system OS is {installed} — not affected",
+        )
+    req  = _version_tuple(note.os_version_min)
+    inst = _version_tuple(installed)
+    ok   = inst >= req
+    return VersionCheckResult(
+        dimension="os",
+        required=f"{note.os_type} >= {note.os_version_min}",
+        installed=installed,
+        status="ok" if ok else "affected",
+        note="" if ok else f"OS {installed} is below required {note.os_version_min}",
+    )
+
+
+# ── main evaluation ───────────────────────────────────────────────────────────
+
+def evaluate_live(system: LiveSystemInfo, note: NoteMetadata) -> LiveApplicabilityResult:
     ts = datetime.now().isoformat(timespec="seconds")
 
-    # ── 1. Already Implemented? ───────────────────────────────────────────────
+    # 1. Already Implemented?
     stripped_num = note.note_number.lstrip("0")
     if stripped_num in system.implemented_notes:
-        evidence = _build_evidence(
-            note, system, ts,
-            comp_ev=ComponentEvidence(required_component="—", component_found=True),
-            sp_ev=SpEvidence(),
-            impl_ev=ImplementationEvidence(note_in_cwbntcust=True, prstatus=" ", already_implemented=True),
-            decision=ALREADY_IMPLEMENTED,
-            confidence=0.99,
-            reason="Note found in CWBNTCUST with status 'implemented' (PRSTATUS=' ').",
-        )
-        return _result(note, system, ALREADY_IMPLEMENTED, 0.99, evidence,
-                       "No action required — this note is already implemented in the system.")
+        ev = _build_ev(note, system, ts,
+                       ComponentEvidence(required_component="—", component_found=True),
+                       SpEvidence(),
+                       ImplementationEvidence(note_in_cwbntcust=True, prstatus=" ", already_implemented=True),
+                       [], ALREADY_IMPLEMENTED, 0.99,
+                       "Note found in CWBNTCUST with status implemented.")
+        return _result(note, system, ALREADY_IMPLEMENTED, 0.99, ev,
+                       "No action required — this note is already implemented.")
 
-    # ── 2. No note metadata → Insufficient Data ───────────────────────────────
+    # 2. No metadata
     if not note.applicability_matrix and not note.components:
-        evidence = _build_evidence(
-            note, system, ts,
-            comp_ev=ComponentEvidence(required_component="—", component_found=False),
-            sp_ev=SpEvidence(),
-            impl_ev=ImplementationEvidence(),
-            decision=INSUFFICIENT_DATA,
-            confidence=0.0,
-            reason="No applicability matrix or component data found in note metadata.",
-        )
-        return _result(note, system, INSUFFICIENT_DATA, 0.0, evidence,
-                       "Add note metadata (upload HTML/PDF or enter manually) to complete the check.")
+        ev = _build_ev(note, system, ts,
+                       ComponentEvidence(required_component="—", component_found=False),
+                       SpEvidence(), ImplementationEvidence(), [],
+                       INSUFFICIENT_DATA, 0.0, "No applicability data in note metadata.")
+        return _result(note, system, INSUFFICIENT_DATA, 0.0, ev,
+                       "Upload note PDF/HTML or download via S-user to complete the check.")
 
-    # ── 3. Check each matrix entry until we find a match ─────────────────────
-    # Use applicability_matrix entries for detailed component + SP check
-    entries = note.applicability_matrix or [
-        type("E", (), {"component": c, "release": "", "sp_from": "", "sp_to": "", "patch_level": ""})()
-        for c in note.components
-    ]
+    # 3. Validity-range check (release range matching — the core fix)
+    validity_entries = [e for e in note.applicability_matrix if e.entry_type == "validity"]
+    sp_entries       = {e.component: e for e in note.applicability_matrix
+                        if e.entry_type == "support_package"}
+
+    # Collect version checks (kernel / DB / OS)
+    ver_checks: List[VersionCheckResult] = []
+    for chk in [_check_kernel(note, system), _check_db(note, system), _check_os(note, system)]:
+        if chk:
+            ver_checks.append(chk)
 
     best_comp_ev = ComponentEvidence(required_component="—", component_found=False)
     best_sp_ev   = SpEvidence()
-    flags: list[str] = []
+    flags: List[str] = []
 
-    for entry in entries:
+    for entry in (validity_entries or []):
         sys_comp = _find_component(system, entry.component)
-        comp_ev = ComponentEvidence(
+        comp_ev  = ComponentEvidence(
             required_component=entry.component,
             component_found=sys_comp is not None,
             installed_release=sys_comp.release if sys_comp else "",
-            required_release=entry.release,
+            required_release=f"{entry.release}–{entry.release_to}" if entry.release_to else entry.release,
         )
         best_comp_ev = comp_ev
 
@@ -134,113 +226,135 @@ def evaluate_live(
             flags.append("COMP_NOT_FOUND")
             continue
 
-        # Release match
-        note_rel = _norm_release(entry.release)
+        rel_from = _norm_release(entry.release)
+        rel_to   = _norm_release(entry.release_to or entry.release)
         sys_rel  = _norm_release(sys_comp.release)
-        if note_rel and sys_rel and sys_rel != note_rel:
+
+        if sys_rel == 0:
+            flags.append("RELEASE_UNKNOWN")
+            continue
+
+        # Is system release within [rel_from, rel_to]?
+        if sys_rel < rel_from:
             comp_ev.release_match = False
-            flags.append("RELEASE_MISMATCH")
+            flags.append("BELOW_RANGE")
             continue
-        comp_ev.release_match = True if (note_rel and sys_rel) else None
 
-        # SP range
-        sp_from = _norm_sp(entry.sp_from)
-        sp_to   = _norm_sp(entry.sp_to)
-        sys_sp  = _norm_sp(sys_comp.sp_level)
+        if rel_to and sys_rel > rel_to:
+            comp_ev.release_match = False
+            flags.append("ABOVE_RANGE")
+            continue
 
-        sp_ev = SpEvidence(
-            installed_sp=sys_comp.sp_level,
-            required_sp_from=entry.sp_from,
-            required_sp_to=entry.sp_to,
-        )
+        comp_ev.release_match = True
 
-        if sys_sp == -1 or (sp_from == -1 and sp_to == -1):
-            sp_ev.in_range = None
-            flags.append("SP_UNKNOWN")
+        # Check if there's a fix SP for this specific release
+        fix_entry = sp_entries.get(entry.component)
+        if fix_entry and _norm_release(fix_entry.release) == sys_rel:
+            fix_sp_seq  = _parse_sp_seq(fix_entry.sp_to)
+            sys_sp_seq  = _parse_sp_seq(sys_comp.sp_level)
+            sp_ev = SpEvidence(
+                installed_sp=sys_comp.sp_level,
+                required_sp_from="",
+                required_sp_to=fix_entry.sp_to,
+            )
             best_sp_ev = sp_ev
-            continue
-
-        in_range = True
-        if sp_from != -1 and sys_sp < sp_from:
-            in_range = False
-        if sp_to != -1 and sys_sp > sp_to:
-            in_range = False
-
-        sp_ev.in_range = in_range
-        best_sp_ev = sp_ev
-
-        if in_range:
-            flags.append("IN_RANGE")
+            if fix_sp_seq != -1 and sys_sp_seq != -1:
+                if sys_sp_seq >= fix_sp_seq:
+                    sp_ev.in_range = False   # already has the fix SP → not applicable
+                    flags.append("FIX_SP_APPLIED")
+                else:
+                    sp_ev.in_range = True
+                    flags.append("IN_RANGE")
+            else:
+                sp_ev.in_range = None
+                flags.append("IN_RANGE")   # release matched, SP unknown → assume applicable
         else:
-            flags.append("OUT_OF_RANGE")
+            # No fix SP listed for this release → whole release is affected
+            best_sp_ev = SpEvidence(installed_sp=sys_comp.sp_level)
+            flags.append("IN_RANGE")
 
-    impl_ev = ImplementationEvidence(
-        note_in_cwbntcust=False,
-        prstatus="",
-        already_implemented=False,
-    )
+    impl_ev = ImplementationEvidence()
 
-    # ── Decision ──────────────────────────────────────────────────────────────
-    if all(f == "COMP_NOT_FOUND" for f in flags):
-        status = NOT_APPLICABLE
+    # Decision
+    if not flags or all(f == "COMP_NOT_FOUND" for f in flags):
+        status     = NOT_APPLICABLE
         confidence = 0.95
-        reason = (
-            f"None of the required components ({', '.join(e.component for e in entries)}) "
-            f"are installed on this system."
-        )
-        action = "No action required — system does not have the affected component."
+        reason     = (f"None of the required components are installed on this system "
+                      f"({', '.join(e.component for e in validity_entries)}).")
+        action     = "No action required — system does not have the affected component."
+
+    elif all(f == "ABOVE_RANGE" for f in flags):
+        status     = NOT_APPLICABLE
+        confidence = 0.92
+        reason     = (f"System release {best_comp_ev.installed_release} is above the "
+                      f"affected range ({best_comp_ev.required_release}). Already patched beyond affected versions.")
+        action     = "No action required — system is already beyond the affected release range."
+
+    elif all(f == "BELOW_RANGE" for f in flags):
+        status     = NOT_APPLICABLE
+        confidence = 0.90
+        reason     = (f"System release {best_comp_ev.installed_release} is below the "
+                      f"affected range ({best_comp_ev.required_release}). Different major version.")
+        action     = "No action required — system is on an older release not covered by this note."
+
+    elif "FIX_SP_APPLIED" in flags and "IN_RANGE" not in flags:
+        status     = NOT_APPLICABLE
+        confidence = 0.93
+        reason     = (f"System has the fix SP already applied "
+                      f"(installed SP {best_sp_ev.installed_sp} >= fix SP {best_sp_ev.required_sp_to}).")
+        action     = "No action required — fix support package already installed."
 
     elif "IN_RANGE" in flags:
-        status = APPLICABLE
-        confidence = 0.92
-        reason = (
-            f"Component {best_comp_ev.required_component} is installed at release "
-            f"{best_comp_ev.installed_release}, SP {best_sp_ev.installed_sp}, "
-            f"which is within the affected range "
-            f"[SP{best_sp_ev.required_sp_from}–SP{best_sp_ev.required_sp_to}]. "
-            f"Note is NOT yet implemented."
-        )
-        action = (
-            f"Apply SAP Note {note.note_number}. "
-            + (f"Workaround: {note.workaround[:120]}" if note.workaround else "No workaround documented.")
-        )
+        # Check if any version dimension is affected
+        ver_affected = [v for v in ver_checks if v.status == "affected"]
+        ver_unknown  = [v for v in ver_checks if v.status == "unknown"]
 
-    elif all(f in ("OUT_OF_RANGE", "RELEASE_MISMATCH") for f in flags):
-        status = NOT_APPLICABLE
-        confidence = 0.90
-        reason = (
-            f"Installed version is outside the affected range. "
-            f"System: {best_comp_ev.required_component} {best_comp_ev.installed_release} "
-            f"SP{best_sp_ev.installed_sp}; "
-            f"Note affects SP{best_sp_ev.required_sp_from}–SP{best_sp_ev.required_sp_to}."
-        )
-        action = "No action required — system is already patched beyond the affected range."
+        if ver_checks and not ver_affected and not ver_unknown:
+            status = NOT_APPLICABLE
+            confidence = 0.85
+            reason = ("Component release is in affected range, but kernel/DB/OS version checks "
+                      "show system is not vulnerable.")
+            action = "No action required — version checks indicate system is not affected."
+        elif ver_unknown:
+            status     = NEEDS_REVIEW
+            confidence = 0.6
+            dims       = ", ".join(v.dimension for v in ver_unknown)
+            reason     = (f"Component {best_comp_ev.required_component} release "
+                          f"{best_comp_ev.installed_release} is in affected range "
+                          f"({best_comp_ev.required_release}). "
+                          f"Could not verify: {dims}.")
+            action     = ("Manually verify " + dims + " version requirements from the note solution. "
+                          + (note.solution[:200] if note.solution else ""))
+        else:
+            status     = APPLICABLE
+            confidence = 0.92
+            sp_info    = (f", SP {best_sp_ev.installed_sp}" if best_sp_ev.installed_sp else "")
+            fix_sp     = (f"; fix SP: {best_sp_ev.required_sp_to}" if best_sp_ev.required_sp_to else
+                          " (no fix SP listed for this release — apply correction instructions)")
+            reason     = (f"Component {best_comp_ev.required_component} release "
+                          f"{best_comp_ev.installed_release}{sp_info} is within the affected range "
+                          f"({best_comp_ev.required_release}){fix_sp}.")
+            action     = (f"Apply SAP Note {note.note_number}. "
+                          + (note.solution[:300] if note.solution else "See note for instructions."))
 
-    elif "SP_UNKNOWN" in flags or "COMP_NOT_FOUND" in flags:
-        status = NEEDS_REVIEW
-        confidence = 0.5
-        reason = "Incomplete version data — could not determine SP range match. Manual review required."
-        action = "Manually verify component version and SP level using SAP transaction SM51 / SPAM."
+    elif "RELEASE_UNKNOWN" in flags:
+        status     = NEEDS_REVIEW
+        confidence = 0.4
+        reason     = "Could not determine system release for this component."
+        action     = "Verify component release and SP manually via transaction SPAM or SE38/RSPARAM."
 
     else:
-        status = NEEDS_REVIEW
+        status     = NEEDS_REVIEW
         confidence = 0.4
-        reason = "Ambiguous result from component/SP comparison. Manual review recommended."
-        action = "Review the component and support package level manually."
+        reason     = "Ambiguous version comparison — manual review recommended."
+        action     = "Check component version and SP manually."
 
-    evidence = _build_evidence(
-        note, system, ts,
-        comp_ev=best_comp_ev,
-        sp_ev=best_sp_ev,
-        impl_ev=impl_ev,
-        decision=status,
-        confidence=confidence,
-        reason=reason,
-    )
-    return _result(note, system, status, confidence, evidence, action)
+    ev = _build_ev(note, system, ts, best_comp_ev, best_sp_ev, impl_ev,
+                   ver_checks, status, confidence, reason)
+    return _result(note, system, status, confidence, ev, action)
 
 
-def _build_evidence(note, system, ts, comp_ev, sp_ev, impl_ev, decision, confidence, reason):
+def _build_ev(note, system, ts, comp_ev, sp_ev, impl_ev, ver_checks, decision, confidence, reason):
     return ApplicabilityEvidence(
         note_number=note.note_number,
         system_sid=system.sid,
@@ -251,6 +365,9 @@ def _build_evidence(note, system, ts, comp_ev, sp_ev, impl_ev, decision, confide
         implementation=impl_ev,
         kernel_release=system.kernel_release,
         kernel_patch=system.kernel_patch,
+        db_version=getattr(system, "db_version", ""),
+        os_version=getattr(system, "os_version", ""),
+        version_checks=ver_checks,
         decision=decision,
         confidence=confidence,
         reason=reason,
@@ -271,4 +388,6 @@ def _result(note, system, status, confidence, evidence, action):
         evidence=evidence,
         recommended_action=action,
         checked_at=evidence.check_timestamp,
+        note_symptoms=getattr(note, "symptoms", ""),
+        note_solution=getattr(note, "solution", ""),
     )

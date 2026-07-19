@@ -74,6 +74,8 @@ def delete_note(note_number: str) -> None:
 
 def note_from_sap_note(sap_note, source: str = "uploaded") -> NoteMetadata:
     """Convert a SapSecurityNote (from parser) into NoteMetadata for caching."""
+    def _g(attr, default=""):
+        return getattr(sap_note, attr, default)
     return NoteMetadata(
         note_number=sap_note.note_number,
         title=sap_note.title,
@@ -82,12 +84,19 @@ def note_from_sap_note(sap_note, source: str = "uploaded") -> NoteMetadata:
         symptoms=sap_note.symptoms,
         solution=sap_note.solution,
         workaround=sap_note.workaround,
+        long_text_html=_g("long_text_html"),
         components=sap_note.components,
         applicability_matrix=sap_note.applicability_matrix,
         prerequisites=sap_note.prerequisites,
         published_date=sap_note.published_date,
         source=source,
         parser_warnings=sap_note.parser_warnings,
+        kernel_min=_g("kernel_min"),
+        kernel_max=_g("kernel_max"),
+        db_type=_g("db_type"),
+        db_version_min=_g("db_version_min"),
+        os_type=_g("os_type"),
+        os_version_min=_g("os_version_min"),
     )
 
 
@@ -145,8 +154,10 @@ def build_rfc_metadata(note_dict: dict) -> NoteMetadata:
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 def _dict_to_meta(d: dict) -> NoteMetadata:
+    known_matrix = NoteApplicabilityMatrixEntry.__dataclass_fields__
     d["applicability_matrix"] = [
-        NoteApplicabilityMatrixEntry(**e) for e in d.get("applicability_matrix", [])
+        NoteApplicabilityMatrixEntry(**{k: v for k, v in e.items() if k in known_matrix})
+        for e in d.get("applicability_matrix", [])
     ]
     d["prerequisites"] = [NotePrerequisite(**p) for p in d.get("prerequisites", [])]
     return NoteMetadata(**{k: v for k, v in d.items() if k in NoteMetadata.__dataclass_fields__})

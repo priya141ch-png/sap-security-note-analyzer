@@ -1,12 +1,11 @@
+
 """
-Domain models for SAP Security Note Analyzer — RFC-based live analysis.
+Domain models for SAP Security Note Analyzer.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-
-# ── RFC Profile ───────────────────────────────────────────────────────────────
 
 @dataclass
 class RfcProfile:
@@ -15,26 +14,26 @@ class RfcProfile:
     sysnr: str
     client: str
     user: str
-    password_enc: str            # Fernet-encrypted — never plain text
+    password_enc: str
     lang: str = "EN"
     timeout: int = 30
     description: str = ""
-    client_group: str = ""       # e.g. "Daimler Trucks", "Novus", "Dolby"
-    environment: str = ""        # e.g. "Production", "Development", "QA"
+    client_group: str = ""
+    environment: str = ""
     created_at: str = ""
     last_tested: str = ""
     last_test_ok: bool = False
 
 
-# ── Note metadata ─────────────────────────────────────────────────────────────
-
 @dataclass
 class NoteApplicabilityMatrixEntry:
     component: str
-    release: str = ""
-    sp_from: str = ""
-    sp_to: str = ""
+    release: str = ""        # affected release FROM (e.g. "750")
+    release_to: str = ""     # affected release TO   (e.g. "758")
+    sp_from: str = ""        # SP from (usually empty)
+    sp_to: str = ""          # fix SP (e.g. "SAPK-75804INSAPBASIS")
     patch_level: str = ""
+    entry_type: str = "validity"   # "validity" | "support_package"
 
 
 @dataclass
@@ -52,6 +51,7 @@ class NoteMetadata:
     symptoms: str = ""
     solution: str = ""
     workaround: str = ""
+    long_text_html: str = ""
     components: List[str] = field(default_factory=list)
     applicability_matrix: List[NoteApplicabilityMatrixEntry] = field(default_factory=list)
     prerequisites: List[NotePrerequisite] = field(default_factory=list)
@@ -59,9 +59,13 @@ class NoteMetadata:
     source: str = ""
     cached_at: str = ""
     parser_warnings: List[str] = field(default_factory=list)
+    kernel_min: str = ""
+    kernel_max: str = ""
+    db_type: str = ""
+    db_version_min: str = ""
+    os_type: str = ""
+    os_version_min: str = ""
 
-
-# ── Legacy alias (adapter compatibility) ─────────────────────────────────────
 
 @dataclass
 class SapSecurityNote:
@@ -72,14 +76,19 @@ class SapSecurityNote:
     symptoms: str = ""
     solution: str = ""
     workaround: str = ""
+    long_text_html: str = ""
     components: List[str] = field(default_factory=list)
     applicability_matrix: List[NoteApplicabilityMatrixEntry] = field(default_factory=list)
     prerequisites: List[NotePrerequisite] = field(default_factory=list)
     published_date: str = ""
     parser_warnings: List[str] = field(default_factory=list)
+    kernel_min: str = ""
+    kernel_max: str = ""
+    db_type: str = ""
+    db_version_min: str = ""
+    os_type: str = ""
+    os_version_min: str = ""
 
-
-# ── Live system data collected via RFC ───────────────────────────────────────
 
 @dataclass
 class SystemComponent:
@@ -99,13 +108,13 @@ class LiveSystemInfo:
     kernel_release: str = ""
     kernel_patch: str = ""
     db_system: str = ""
+    db_version: str = ""
+    os_version: str = ""
     components: List[SystemComponent] = field(default_factory=list)
     implemented_notes: List[str] = field(default_factory=list)
     collected_at: str = ""
     collection_warnings: List[str] = field(default_factory=list)
 
-
-# ── Evidence ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class ComponentEvidence:
@@ -132,6 +141,15 @@ class ImplementationEvidence:
 
 
 @dataclass
+class VersionCheckResult:
+    dimension: str
+    required: str = ""
+    installed: str = ""
+    status: str = ""
+    note: str = ""
+
+
+@dataclass
 class ApplicabilityEvidence:
     note_number: str
     system_sid: str
@@ -142,6 +160,9 @@ class ApplicabilityEvidence:
     implementation: ImplementationEvidence
     kernel_release: str = ""
     kernel_patch: str = ""
+    db_version: str = ""
+    os_version: str = ""
+    version_checks: List[VersionCheckResult] = field(default_factory=list)
     decision: str = ""
     confidence: float = 0.0
     reason: str = ""
@@ -162,6 +183,8 @@ class LiveApplicabilityResult:
     evidence: ApplicabilityEvidence
     recommended_action: str
     checked_at: str
+    note_symptoms: str = ""
+    note_solution: str = ""
 
 
 @dataclass
@@ -178,8 +201,6 @@ class RiskSummary:
     exposure_score: float = 0.0
     avg_patch_age_days: float = 0.0
 
-
-# ── Legacy landscape (kept for test compat) ───────────────────────────────────
 
 @dataclass
 class Landscape:

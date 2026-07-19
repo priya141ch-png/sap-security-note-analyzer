@@ -423,6 +423,28 @@ def _show_multi_results(results: list, note_meta, note_number: str,
 
                 st.info(f"**Recommended action:** {result.recommended_action}")
 
+                # Version checks (kernel / DB / OS)
+                ver_checks = getattr(result.evidence, "version_checks", [])
+                if ver_checks:
+                    st.markdown("**Version Checks:**")
+                    for vc in ver_checks:
+                        icon = {"ok": "✅", "affected": "⚠️", "unknown": "❓"}.get(vc.status, "—")
+                        st.markdown(
+                            f"{icon} **{vc.dimension.upper()}**: "
+                            f"Required `{vc.required}` | Installed `{vc.installed}`"
+                            + (f"  _({vc.note})_" if vc.note else "")
+                        )
+
+                # Inline note summary
+                note_symp = getattr(result, "note_symptoms", "")
+                note_sol  = getattr(result, "note_solution", "")
+                if note_symp or note_sol:
+                    with st.expander("Note summary"):
+                        if note_symp:
+                            st.markdown("**About:** " + note_symp[:500])
+                        if note_sol:
+                            st.markdown("**Solution:** " + note_sol[:500])
+
     # ── Download reports ──────────────────────────────────────────────────────
     if ok_rows:
         st.divider()
@@ -462,20 +484,48 @@ def _show_multi_results(results: list, note_meta, note_number: str,
 # ── Note metadata helpers ─────────────────────────────────────────────────────
 
 def _show_note_meta(note) -> None:
+    """Show note header metrics + what the note is about + solution."""
     cols = st.columns(4)
-    cols[0].metric("Note #",      note.note_number)
-    cols[1].metric("Severity",    note.severity or "—")
-    cols[2].metric("CVSS",        note.cvss_score or "—")
-    cols[3].metric("Matrix Rows", len(note.applicability_matrix))
+    cols[0].metric("Note #",   note.note_number)
+    cols[1].metric("Severity", note.severity or "—")
+    cols[2].metric("CVSS",     note.cvss_score or "—")
+    cols[3].metric("Affected Releases", len([e for e in note.applicability_matrix if e.entry_type == "validity"]))
     if note.title:
-        st.caption(f"**Title:** {note.title}")
-    if note.applicability_matrix:
+        st.markdown(f"**{note.title}**")
+
+    # ── What the note is about ────────────────────────────────────────────────
+    if note.symptoms:
+        with st.expander("What is this note about?", expanded=True):
+            st.markdown(note.symptoms)
+
+    # ── Proposed solution ────────────────────────────────────────────────────
+    if note.solution:
+        with st.expander("Proposed Solution", expanded=False):
+            st.markdown(note.solution)
+            if getattr(note, "workaround", ""):
+                st.markdown("**Workaround / Other Terms:**")
+                st.markdown(note.workaround)
+
+    # ── Version requirements (if any extracted) ───────────────────────────────
+    ver_info = []
+    if getattr(note, "kernel_min", ""):
+        ver_info.append(f"Kernel >= {note.kernel_min}")
+    if getattr(note, "db_type", ""):
+        ver_info.append(f"DB: {note.db_type} >= {note.db_version_min or '?'}")
+    if getattr(note, "os_type", ""):
+        ver_info.append(f"OS: {note.os_type} >= {note.os_version_min or '?'}")
+    if ver_info:
+        st.info("Version requirements detected: " + " | ".join(ver_info))
+
+    # ── Affected release matrix ───────────────────────────────────────────────
+    validity = [e for e in note.applicability_matrix if e.entry_type == "validity"]
+    if validity:
         import pandas as pd
         from dataclasses import asdict
-        st.dataframe(
-            pd.DataFrame([asdict(e) for e in note.applicability_matrix]),
-            use_container_width=True, hide_index=True,
-        )
+        rows = [{"Component": e.component, "Release From": e.release, "Release To": e.release_to}
+                for e in validity]
+        st.markdown("**Affected Software Component Versions:**")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def _fetch_note_section(note_number: str) -> None:
