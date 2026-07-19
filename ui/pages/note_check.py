@@ -435,15 +435,15 @@ def _show_multi_results(results: list, note_meta, note_number: str,
                             + (f"  _({vc.note})_" if vc.note else "")
                         )
 
-                # Inline note summary
+                # Inline note summary (no nested expander — already inside one)
                 note_symp = getattr(result, "note_symptoms", "")
                 note_sol  = getattr(result, "note_solution", "")
                 if note_symp or note_sol:
-                    with st.expander("Note summary"):
-                        if note_symp:
-                            st.markdown("**About:** " + note_symp[:500])
-                        if note_sol:
-                            st.markdown("**Solution:** " + note_sol[:500])
+                    st.markdown("---")
+                    if note_symp:
+                        st.markdown("**About this note:** " + note_symp[:400])
+                    if note_sol:
+                        st.markdown("**Solution:** " + note_sol[:400])
 
     # ── Download reports ──────────────────────────────────────────────────────
     if ok_rows:
@@ -483,8 +483,12 @@ def _show_multi_results(results: list, note_meta, note_number: str,
 
 # ── Note metadata helpers ─────────────────────────────────────────────────────
 
-def _show_note_meta(note) -> None:
-    """Show note header metrics + what the note is about + solution."""
+def _show_note_meta(note, inside_expander: bool = False) -> None:
+    """Show note header metrics + what the note is about + solution.
+
+    When called inside a st.expander (inside_expander=True), nested expanders
+    are replaced with plain sections — Streamlit forbids nesting expanders.
+    """
     cols = st.columns(4)
     cols[0].metric("Note #",   note.note_number)
     cols[1].metric("Severity", note.severity or "—")
@@ -495,16 +499,17 @@ def _show_note_meta(note) -> None:
 
     # ── What the note is about ────────────────────────────────────────────────
     if note.symptoms:
-        with st.expander("What is this note about?", expanded=True):
-            st.markdown(note.symptoms)
+        st.markdown("**What is this note about?**")
+        st.markdown(note.symptoms)
 
-    # ── Proposed solution ────────────────────────────────────────────────────
+    # ── Proposed solution ─────────────────────────────────────────────────────
     if note.solution:
-        with st.expander("Proposed Solution", expanded=False):
-            st.markdown(note.solution)
-            if getattr(note, "workaround", ""):
-                st.markdown("**Workaround / Other Terms:**")
-                st.markdown(note.workaround)
+        st.markdown("---")
+        st.markdown("**Proposed Solution**")
+        st.markdown(note.solution)
+        if getattr(note, "workaround", ""):
+            st.markdown("**Workaround / Other Terms:**")
+            st.markdown(note.workaround)
 
     # ── Version requirements (if any extracted) ───────────────────────────────
     ver_info = []
@@ -521,7 +526,6 @@ def _show_note_meta(note) -> None:
     validity = [e for e in note.applicability_matrix if e.entry_type == "validity"]
     if validity:
         import pandas as pd
-        from dataclasses import asdict
         rows = [{"Component": e.component, "Release From": e.release, "Release To": e.release_to}
                 for e in validity]
         st.markdown("**Affected Software Component Versions:**")
