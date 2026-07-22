@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAP Security Note Analyzer — Redirecting...</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px;
+    }
+    .card {
+      background: #1e293b; border: 1px solid #334155;
+      border-radius: 16px; padding: 48px 40px;
+      max-width: 480px; width: 100%; text-align: center;
+    }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h1 { font-size: 22px; font-weight: 700; color: #f1f5f9; margin-bottom: 8px; }
+    .sub { font-size: 14px; color: #94a3b8; margin-bottom: 32px; }
+    .status {
+      font-size: 14px; color: #64748b; margin-bottom: 24px;
+      min-height: 20px; transition: color 0.3s;
+    }
+    .status.ok   { color: #34d399; }
+    .status.warn { color: #fbbf24; }
+    .status.err  { color: #f87171; }
+    .spinner {
+      width: 36px; height: 36px; border: 3px solid #334155;
+      border-top-color: #6366f1; border-radius: 50%;
+      animation: spin 0.8s linear infinite; margin: 0 auto 24px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .btn {
+      display: inline-block; padding: 12px 28px;
+      background: #6366f1; color: #fff; border-radius: 8px;
+      text-decoration: none; font-size: 14px; font-weight: 600;
+      transition: background 0.2s; margin-top: 8px;
+    }
+    .btn:hover { background: #4f46e5; }
+    .btn.secondary {
+      background: #334155; color: #cbd5e1; margin-left: 8px;
+    }
+    .btn.secondary:hover { background: #475569; }
+    #url-display {
+      font-size: 12px; color: #475569; word-break: break-all;
+      margin-top: 16px; display: none;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">🛡️</div>
+  <h1>SAP Security Note Analyzer</h1>
+  <p class="sub">Fetching current application URL...</p>
+
+  <div id="spinner" class="spinner"></div>
+  <div id="status" class="status">Looking up live URL from discovery service...</div>
+
+  <div id="actions" class="hidden">
+    <a id="go-btn" href="#" class="btn">Open Application →</a>
+    <a href="https://diffusive-knee-handwork.ngrok-free.dev" class="btn secondary" target="_blank">ngrok URL</a>
+  </div>
+
+  <div id="url-display"></div>
+</div>
+
+<script>
+  const GIST_RAW = "https://gist.githubusercontent.com/priya141ch-png/29120e8c133492f893b2b6a65158532a/raw/relay.json";
+  const NGROK    = "https://diffusive-knee-handwork.ngrok-free.dev";
+
+  const $status  = document.getElementById("status");
+  const $spinner = document.getElementById("spinner");
+  const $actions = document.getElementById("actions");
+  const $goBtn   = document.getElementById("go-btn");
+  const $urlDisp = document.getElementById("url-display");
+
+  function setStatus(msg, cls) {
+    $status.textContent = msg;
+    $status.className = "status " + (cls || "");
+  }
+
+  async function fetchAndRedirect() {
+    try {
+      // Cache-bust so we always get the freshest Gist content
+      const resp = await fetch(GIST_RAW + "?t=" + Date.now(), { cache: "no-store" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+
+      const uiUrl = data.ui_url || "";
+      const updated = data.updated || "";
+
+      if (!uiUrl) {
+        throw new Error("ui_url not yet in Gist — VM may not have restarted since last update");
+      }
+
+      setStatus("Found! Redirecting in 2 seconds...", "ok");
+      $spinner.style.display = "none";
+      $goBtn.href = uiUrl;
+      $actions.classList.remove("hidden");
+      $urlDisp.style.display = "block";
+      $urlDisp.textContent = uiUrl + (updated ? "  (updated " + updated + ")" : "");
+
+      // Auto-redirect after 2s
+      setTimeout(() => { window.location.href = uiUrl; }, 2000);
+
+    } catch (err) {
+      setStatus("Could not fetch URL: " + err.message + ". Using ngrok fallback.", "warn");
+      $spinner.style.display = "none";
+      $goBtn.href = NGROK;
+      $goBtn.textContent = "Open via ngrok →";
+      $actions.classList.remove("hidden");
+      setTimeout(() => { window.location.href = NGROK; }, 3000);
+    }
+  }
+
+  fetchAndRedirect();
+</script>
+</body>
+</html>

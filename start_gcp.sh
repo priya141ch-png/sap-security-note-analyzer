@@ -73,10 +73,15 @@ if not token:
             if line.startswith("GITHUB_TOKEN="):
                 token = line.strip().split("=", 1)[1]
 relay_url = "$RELAY_URL"
+ui_url    = "$CF_UI_URL"
 payload = json.dumps({
     "files": {
         "relay.json": {
-            "content": json.dumps({"relay_url": relay_url, "updated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"})
+            "content": json.dumps({
+                "relay_url": relay_url,
+                "ui_url":    ui_url,
+                "updated":   "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            })
         }
     }
 }).encode()
