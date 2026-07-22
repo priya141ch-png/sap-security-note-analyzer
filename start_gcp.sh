@@ -27,23 +27,35 @@ echo "Streamlit PID $! on port 8080"
 
 sleep 4
 
-# UI: permanent ngrok static domain — does not change across restarts
+# UI: Cloudflare tunnel (VPN-friendly, changes on restart) + ngrok (permanent)
+nohup "$HOME/bin/cloudflared" tunnel --url http://localhost:8080 --no-autoupdate > "$LOG/cf_ui.log" 2>&1 &
+echo "Cloudflare UI tunnel PID $!"
+
+# Also keep ngrok running (permanent domain, for non-VPN access)
 nohup "$HOME/bin/ngrok" http 8080 --url="$NGROK_DOMAIN" > "$LOG/ngrok_ui.log" 2>&1 &
 echo "ngrok UI tunnel PID $! -> https://$NGROK_DOMAIN"
 
-# Relay: Cloudflare quick tunnel (URL changes each restart — update relay\relay.bat after restart)
+# Relay: Cloudflare quick tunnel
 sleep 2
 nohup "$HOME/bin/cloudflared" tunnel --url http://localhost:8081 --no-autoupdate > "$LOG/cf_relay.log" 2>&1 &
 
-echo "Waiting for relay tunnel URL..."
+echo "Waiting for tunnel URLs..."
+CF_UI_URL=""
 RELAY_URL=""
-for i in $(seq 1 40); do
+for i in $(seq 1 50); do
   sleep 1
-  RELAY_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG/cf_relay.log" 2>/dev/null | head -1)
-  [ -n "$RELAY_URL" ] && break
+  [ -z "$CF_UI_URL" ]  && CF_UI_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG/cf_ui.log"    2>/dev/null | head -1)
+  [ -z "$RELAY_URL" ]  && RELAY_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG/cf_relay.log" 2>/dev/null | head -1)
+  [ -n "$CF_UI_URL" ] && [ -n "$RELAY_URL" ] && break
 done
 
-UI_URL="https://$NGROK_DOMAIN"
+UI_URL="${CF_UI_URL:-https://$NGROK_DOMAIN}"
+printf "SAP Security Note Analyzer
+UI (Cloudflare): %s
+UI (ngrok): https://%s
+Relay: %s
+Started: %s
+" "$CF_UI_URL" "$NGROK_DOMAIN" "$RELAY_URL" "$(date)" > "$BASE/URLS.txt"
 printf "SAP Security Note Analyzer\nUI: %s\nRelay: %s\nStarted: %s\n" "$UI_URL" "$RELAY_URL" "$(date)" > "$BASE/URLS.txt"
 
 # Push relay URL to GitHub Gist so relay client can auto-discover it
